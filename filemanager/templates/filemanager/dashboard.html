@@ -1,0 +1,110 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Dashboard - SNC{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2 style="color: var(--primary-blue); margin-bottom: 1rem;">Welcome to Vessel File Repository, {{ user.username }}!</h2>
+    <p style="color: var(--gray); margin-bottom: 2rem;">
+        Secure file management system for SNC vessels
+    </p>
+    
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 2rem;">
+        <div class="card" style="background: var(--light-blue);">
+            <h3 style="color: var(--primary-blue); margin-bottom: 1rem;">Quick Access</h3>
+            <a href="{% url 'file_browser' %}" class="btn btn-primary" style="width: 100%; text-align: center; margin-bottom: 1rem;">
+                📂 Browse All Files
+            </a>
+            {% if user.is_superuser %}
+            <a href="{% url 'admin:index' %}" class="btn btn-secondary" style="width: 100%; text-align: center;">
+                ⚙️ Admin Panel
+            </a>
+            {% endif %}
+        </div>
+        
+        <div class="card" style="background: var(--light-blue);">
+            <h3 style="color: var(--primary-blue); margin-bottom: 1rem;">Your Folders</h3>
+            {% if accessible_folders %}
+                <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                    {% for folder in accessible_folders %}
+                    <a href="{% url 'file_browser' folder.path %}" 
+                       class="btn btn-secondary" 
+                       style="text-align: left; display: flex; justify-content: space-between;">
+                        <span>📁 {{ folder.name }}</span>
+                        <small style="background: var(--orange); color: white; padding: 0.2rem 0.5rem; border-radius: 3px; font-size: 0.7rem;">
+                            {{ folder.permission|upper }}
+                        </small>
+                    </a>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <p style="color: var(--gray); text-align: center; padding: 1rem;">No folders assigned</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h3 style="color: var(--primary-blue); margin-bottom: 1rem;">System Overview</h3>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
+        <div style="text-align: center; padding: 1.5rem; background: var(--light-gray); border-radius: 10px;">
+            <div style="font-size: 2.5rem; color: var(--orange); margin-bottom: 0.5rem;">📁</div>
+            <div style="font-weight: bold; color: var(--primary-blue); font-size: 1.2rem;">File Access</div>
+            <div style="color: var(--gray); font-size: 0.9rem;">View, Upload, Download</div>
+        </div>
+        
+        <div style="text-align: center; padding: 1.5rem; background: var(--light-gray); border-radius: 10px;">
+            <div style="font-size: 2.5rem; color: var(--secondary-blue); margin-bottom: 0.5rem;">🔒</div>
+            <div style="font-weight: bold; color: var(--primary-blue); font-size: 1.2rem;">Secure</div>
+            <div style="color: var(--gray); font-size: 0.9rem;">Encrypted & Protected</div>
+        </div>
+        
+        <div style="text-align: center; padding: 1.5rem; background: var(--light-gray); border-radius: 10px;">
+            <div style="font-size: 2.5rem; color: var(--orange); margin-bottom: 0.5rem;">⚓</div>
+            <div style="font-weight: bold; color: var(--primary-blue); font-size: 1.2rem;">Vessel Ready</div>
+            <div style="color: var(--gray); font-size: 0.9rem;">Maritime Optimized</div>
+        </div>
+        
+        <div style="text-align: center; padding: 1.5rem; background: var(--light-gray); border-radius: 10px;">
+            <div style="font-size: 2.5rem; color: var(--secondary-blue); margin-bottom: 0.5rem;">💾</div>
+            <div style="font-weight: bold; color: var(--primary-blue); font-size: 1.2rem;">10GB Files</div>
+            <div style="color: var(--gray); font-size: 0.9rem;">Large File Support</div>
+        </div>
+    </div>
+</div>
+
+{% if recent_activities %}
+<div class="card">
+    <h3 style="color: var(--primary-blue); margin-bottom: 1rem;">Recent Activity</h3>
+    <div style="max-height: 300px; overflow-y: auto;">
+        <table style="width: 100%; border-collapse: collapse;">
+            <thead>
+                <tr style="background: var(--light-gray);">
+                    <th style="padding: 0.75rem; text-align: left; border-bottom: 1px solid #e5e7eb;">File</th>
+                    <th style="padding: 0.75rem; text-align: left; border-bottom: 1px solid #e5e7eb;">Action</th>
+                    <th style="padding: 0.75rem; text-align: left; border-bottom: 1px solid #e5e7eb;">Time</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for activity in recent_activities %}
+                <tr>
+                    <td style="padding: 0.75rem; border-bottom: 1px solid #e5e7eb;">{{ activity.filename }}</td>
+                    <td style="padding: 0.75rem; border-bottom: 1px solid #e5e7eb;">
+                        <span style="padding: 0.2rem 0.5rem; border-radius: 3px; font-size: 0.8rem; 
+                              {% if activity.activity_type == 'upload' %}background: #d1fae5; color: #065f46;
+                              {% elif activity.activity_type == 'download' %}background: #dbeafe; color: #1e3a8a;
+                              {% elif activity.activity_type == 'delete' %}background: #fee2e2; color: #991b1b;
+                              {% else %}background: #f3f4f6; color: #6b7280;{% endif %}">
+                            {{ activity.activity_type|title }}
+                        </span>
+                    </td>
+                    <td style="padding: 0.75rem; border-bottom: 1px solid #e5e7eb;">{{ activity.timestamp|date:"M d, Y H:i" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

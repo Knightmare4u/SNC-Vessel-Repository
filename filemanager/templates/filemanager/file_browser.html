@@ -1,0 +1,428 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}File Browser - SNC{% endblock %}
+
+{% block content %}
+<input type="hidden" id="currentFolderPath" value="{{ current_path }}">
+
+<div class="card">
+    <!-- Header with breadcrumb and actions -->
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; flex-wrap: wrap; gap: 1rem;">
+        <div style="display: flex; align-items: center; gap: 1rem; flex-grow: 1;">
+            <div class="breadcrumb">
+                <a href="{% url 'file_browser' %}" class="btn btn-secondary btn-sm">🏠 Root</a>
+                {% for crumb in breadcrumbs %}
+                    <span style="color: var(--gray);">/</span>
+                    <a href="{% url 'file_browser' crumb.path %}" class="btn btn-secondary btn-sm">📁 {{ crumb.name }}</a>
+                {% endfor %}
+            </div>
+        </div>
+        
+        <div style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+            <div style="position: relative;">
+                <input type="text" id="searchInput" placeholder="Search files..." 
+                       style="padding: 0.75rem; border: 1px solid #d1d5db; border-radius: 5px; width: 250px;">
+            </div>
+            
+            {% if can_create_folder %}
+            <button class="btn btn-secondary btn-sm" id="createFolderBtn">
+                📁 New Folder
+            </button>
+            {% endif %}
+            
+            {% if can_upload %}
+            <button class="btn btn-primary btn-sm" onclick="document.getElementById('fileInput').click()">
+                📤 Upload Files
+            </button>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Upload Zone -->
+    {% if can_upload %}
+    <div class="upload-zone" id="uploadZone" style="border: 2px dashed var(--secondary-blue); border-radius: 10px; padding: 2rem; text-align: center; background: var(--light-blue); margin-bottom: 2rem; display: none;">
+        <div style="font-size: 3rem; margin-bottom: 1rem;">📤</div>
+        <h3>Drag & Drop Files to Upload</h3>
+        <p>or click to select files (up to 10GB per file)</p>
+    </div>
+
+    <!-- Upload Progress -->
+    <div id="uploadProgress" style="display: none; margin-bottom: 2rem;">
+        <h3>Upload Progress</h3>
+        <div id="uploadList"></div>
+    </div>
+    {% endif %}
+
+    <!-- Files List -->
+    <div style="overflow-x: auto;">
+        <table style="width: 100%; border-collapse: collapse; background: var(--white);">
+            <thead>
+                <tr style="background: var(--light-gray);">
+                    <th style="padding: 1rem; text-align: left; border-bottom: 2px solid #e5e7eb;">Name</th>
+                    <th style="padding: 1rem; text-align: left; border-bottom: 2px solid #e5e7eb; width: 120px;">Size</th>
+                    <th style="padding: 1rem; text-align: left; border-bottom: 2px solid #e5e7eb; width: 180px;">Modified</th>
+                    <th style="padding: 1rem; text-align: center; border-bottom: 2px solid #e5e7eb; width: 150px;">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in items %}
+                <tr style="border-bottom: 1px solid #e5e7eb; transition: background-color 0.2s;" 
+                    onmouseover="this.style.backgroundColor='var(--light-gray)'" 
+                    onmouseout="this.style.backgroundColor='var(--white)'">
+                    <td style="padding: 1rem;">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <div style="font-size: 1.5rem;">
+                                {% if item.type == 'folder' %}
+                                    📁
+                                {% else %}
+                                    {{ item.icon }}
+                                {% endif %}
+                            </div>
+                            <div>
+                                {% if item.type == 'folder' %}
+                                    <a href="{% url 'file_browser' item.path %}" 
+                                       style="text-decoration: none; color: var(--primary-blue); font-weight: 500;">
+                                        {{ item.name }}
+                                    </a>
+                                {% else %}
+                                    <span style="font-weight: 500;">{{ item.name }}</span>
+                                {% endif %}
+                                <div style="font-size: 0.875rem; color: var(--gray);">
+                                    {% if item.type == 'folder' %}
+                                        Folder
+                                    {% else %}
+                                        {{ item.extension|upper }} File
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                    </td>
+                    <td style="padding: 1rem; color: var(--gray);">
+                        {{ item.size }}
+                    </td>
+                    <td style="padding: 1rem; color: var(--gray);">
+                        {{ item.modified|date:"M d, Y H:i" }}
+                    </td>
+                    <td style="padding: 1rem; text-align: center;">
+                        <div style="display: flex; gap: 0.5rem; justify-content: center;">
+                            {% if item.type == 'file' %}
+                                <button class="btn btn-secondary btn-sm download-btn" 
+                                        data-filepath="{{ item.path }}"
+                                        title="Download">
+                                    ⬇️
+                                </button>
+                                <button class="btn btn-secondary btn-sm preview-btn" 
+                                        data-filepath="{{ item.path }}"
+                                        title="Preview Info">
+                                    👁️
+                                </button>
+                            {% else %}
+                                <a href="{% url 'file_browser' item.path %}" 
+                                   class="btn btn-secondary btn-sm"
+                                   title="Open Folder">
+                                    📂
+                                </a>
+                            {% endif %}
+                            
+                            {% if can_delete %}
+                                <button class="btn btn-danger btn-sm delete-btn" 
+                                        data-filepath="{{ item.path }}"
+                                        data-filename="{{ item.name }}"
+                                        title="Delete">
+                                    🗑️
+                                </button>
+                            {% endif %}
+                        </div>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="4" style="padding: 3rem; text-align: center; color: var(--gray);">
+                        <div style="font-size: 3rem; margin-bottom: 1rem;">📁</div>
+                        <h3>This folder is empty</h3>
+                        <p>{% if can_upload %}Upload some files to get started!{% else %}No files available.{% endif %}</p>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Folder Stats -->
+    {% if items %}
+    <div style="margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #e5e7eb;">
+        <div style="display: flex; gap: 2rem; color: var(--gray); font-size: 0.875rem;">
+            <div><strong>{{ folder_count }}</strong> folders</div>
+            <div><strong>{{ file_count }}</strong> files</div>
+            <div><strong>{{ total_size }}</strong> total size</div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Create Folder Modal -->
+<div id="createFolderModal" class="modal" style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5);">
+    <div class="modal-content" style="background-color: var(--white); margin: 10% auto; padding: 2rem; border-radius: 10px; width: 90%; max-width: 400px; position: relative;">
+        <span class="close-modal" style="position: absolute; right: 1rem; top: 1rem; font-size: 1.5rem; cursor: pointer; color: var(--gray);">&times;</span>
+        <h3 style="margin-bottom: 1rem;">Create New Folder</h3>
+        <div style="margin: 1.5rem 0;">
+            <input type="text" id="folderName" placeholder="Enter folder name" 
+                   style="width: 100%; padding: 0.75rem; border: 1px solid #d1d5db; border-radius: 5px;">
+        </div>
+        <button class="btn btn-primary" onclick="createFolder()" style="width: 100%;">
+            Create Folder
+        </button>
+    </div>
+</div>
+
+<!-- Hidden file input for uploads -->
+<input type="file" id="fileInput" multiple style="display: none;" 
+       accept="*/*" data-max-size="10737418240">
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Fixed CSRF token function
+function getCSRFToken() {
+    const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]');
+    if (csrfToken) {
+        return csrfToken.value;
+    }
+    // Alternative method to get CSRF token
+    const csrfCookie = document.cookie.split('; ').find(row => row.startsWith('csrftoken='));
+    if (csrfCookie) {
+        return csrfCookie.split('=')[1];
+    }
+    console.error('CSRF token not found');
+    return '';
+}
+
+// Simple JavaScript for basic functionality
+document.addEventListener('DOMContentLoaded', function() {
+    // Add CSRF token to the page if not present
+    if (!document.querySelector('[name=csrfmiddlewaretoken]')) {
+        const csrfInput = document.createElement('input');
+        csrfInput.type = 'hidden';
+        csrfInput.name = 'csrfmiddlewaretoken';
+        csrfInput.value = getCSRFToken();
+        document.body.appendChild(csrfInput);
+    }
+
+    // Create folder modal
+    const createFolderBtn = document.getElementById('createFolderBtn');
+    const createFolderModal = document.getElementById('createFolderModal');
+    const closeModal = document.querySelector('.close-modal');
+    
+    if (createFolderBtn && createFolderModal) {
+        createFolderBtn.addEventListener('click', () => {
+            createFolderModal.style.display = 'block';
+        });
+        
+        closeModal.addEventListener('click', () => {
+            createFolderModal.style.display = 'none';
+        });
+        
+        window.addEventListener('click', (e) => {
+            if (e.target === createFolderModal) {
+                createFolderModal.style.display = 'none';
+            }
+        });
+    }
+    
+    // File action handlers
+    document.addEventListener('click', function(e) {
+        if (e.target.classList.contains('download-btn')) {
+            const filePath = e.target.dataset.filepath;
+            downloadFile(filePath);
+        } else if (e.target.classList.contains('delete-btn')) {
+            const filePath = e.target.dataset.filepath;
+            const fileName = e.target.dataset.filename;
+            deleteFile(filePath, fileName);
+        } else if (e.target.classList.contains('preview-btn')) {
+            const filePath = e.target.dataset.filepath;
+            previewFile(filePath);
+        }
+    });
+    
+    // Upload zone functionality
+    const uploadZone = document.getElementById('uploadZone');
+    const fileInput = document.getElementById('fileInput');
+    
+    if (uploadZone && fileInput) {
+        // Show upload zone
+        uploadZone.style.display = 'block';
+        
+        uploadZone.addEventListener('click', () => fileInput.click());
+        
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.style.backgroundColor = 'var(--secondary-blue)';
+            uploadZone.style.color = 'var(--white)';
+        });
+        
+        uploadZone.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            if (!uploadZone.contains(e.relatedTarget)) {
+                uploadZone.style.backgroundColor = 'var(--light-blue)';
+                uploadZone.style.color = 'inherit';
+            }
+        });
+        
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.style.backgroundColor = 'var(--light-blue)';
+            uploadZone.style.color = 'inherit';
+            const files = e.dataTransfer.files;
+            handleFileUpload(files);
+        });
+        
+        fileInput.addEventListener('change', (e) => {
+            handleFileUpload(e.target.files);
+        });
+    }
+});
+
+async function createFolder() {
+    const folderName = document.getElementById('folderName').value.trim();
+    const folderPath = document.getElementById('currentFolderPath').value;
+    
+    if (!folderName) {
+        alert('Please enter a folder name');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/create-folder/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCSRFToken()
+            },
+            body: JSON.stringify({
+                folder_path: folderPath,
+                folder_name: folderName
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            location.reload();
+        } else {
+            alert('Error creating folder: ' + result.error);
+        }
+    } catch (error) {
+        alert('Error creating folder: ' + error.message);
+    }
+}
+
+async function deleteFile(filePath, fileName) {
+    if (!confirm(`Are you sure you want to delete "${fileName}"?`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch('/delete/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCSRFToken()
+            },
+            body: JSON.stringify({
+                path: filePath
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            location.reload();
+        } else {
+            alert('Error deleting file: ' + result.error);
+        }
+    } catch (error) {
+        alert('Error deleting file: ' + error.message);
+    }
+}
+
+function downloadFile(filePath) {
+    window.open(`/download/${filePath}`, '_blank');
+}
+
+async function previewFile(filePath) {
+    try {
+        const response = await fetch(`/preview/${filePath}`);
+        const result = await response.json();
+        
+        if (result.file) {
+            alert(`File Information:\n\nName: ${result.file.name}\nSize: ${result.file.formatted_size}\nType: ${result.file.extension}\nPath: ${result.file.path}`);
+        } else {
+            alert('Error previewing file: ' + result.error);
+        }
+    } catch (error) {
+        alert('Error previewing file: ' + error.message);
+    }
+}
+
+function handleFileUpload(files) {
+    if (files.length === 0) return;
+    
+    const formData = new FormData();
+    const folderPath = document.getElementById('currentFolderPath').value;
+    
+    console.log('Uploading to folder:', folderPath);
+    console.log('Files to upload:', files.length);
+    
+    formData.append('folder_path', folderPath);
+    
+    for (let i = 0; i < files.length; i++) {
+        console.log('Adding file:', files[i].name);
+        formData.append('files', files[i]);
+    }
+    
+    // Show upload progress
+    const uploadProgress = document.getElementById('uploadProgress');
+    const uploadList = document.getElementById('uploadList');
+    
+    uploadProgress.style.display = 'block';
+    uploadList.innerHTML = '<div>Starting upload...</div>';
+    
+    fetch('/upload/', {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-CSRFToken': getCSRFToken()
+        }
+    })
+    .then(response => {
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response.json();
+    })
+    .then(result => {
+        console.log('Upload result:', result);
+        if (result.success) {
+            uploadList.innerHTML = '<div style="color: var(--success-green); padding: 1rem; text-align: center;">✅ Upload completed! Reloading page...</div>';
+            setTimeout(() => location.reload(), 1500);
+        } else {
+            uploadList.innerHTML = `<div style="color: var(--error-red); padding: 1rem;">❌ Upload failed: ${result.error}</div>`;
+        }
+    })
+    .catch(error => {
+        console.error('Upload error:', error);
+        uploadList.innerHTML = `<div style="color: var(--error-red); padding: 1rem;">❌ Upload error: ${error.message}</div>`;
+    });
+}
+
+// Show upload zone when page loads if user can upload
+document.addEventListener('DOMContentLoaded', function() {
+    const uploadZone = document.getElementById('uploadZone');
+    if (uploadZone) {
+        uploadZone.style.display = 'block';
+    }
+});
+</script>
+{% endblock %}

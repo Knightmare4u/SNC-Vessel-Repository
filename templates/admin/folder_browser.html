@@ -1,0 +1,180 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block extrastyle %}
+{{ block.super }}
+<style>
+.folder-browser {
+    font-family: Arial, sans-serif;
+}
+
+.folder-list {
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    max-height: 400px;
+    overflow-y: auto;
+    margin: 10px 0;
+}
+
+.folder-item {
+    padding: 8px 12px;
+    border-bottom: 1px solid #eee;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+}
+
+.folder-item:hover {
+    background-color: #f5f5f5;
+}
+
+.folder-item.selected {
+    background-color: #e7f3ff;
+}
+
+.folder-icon {
+    margin-right: 8px;
+}
+
+.folder-name {
+    flex-grow: 1;
+}
+
+.folder-path {
+    color: #666;
+    font-size: 12px;
+    margin-left: 10px;
+}
+
+.breadcrumb {
+    margin-bottom: 10px;
+}
+
+.breadcrumb-item {
+    cursor: pointer;
+    color: #007bff;
+}
+
+.breadcrumb-item:hover {
+    text-decoration: underline;
+}
+
+.action-buttons {
+    margin-top: 15px;
+    text-align: right;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="folder-browser">
+    <h1>Select Folder</h1>
+    
+    <div class="breadcrumb" id="breadcrumb">
+        <span class="breadcrumb-item" data-path="">Root</span>
+    </div>
+    
+    <div class="folder-list" id="folderList">
+        <div class="folder-item" data-path="">
+            <span class="folder-icon">📁</span>
+            <span class="folder-name">Loading folders...</span>
+        </div>
+    </div>
+    
+    <div class="action-buttons">
+        <button type="button" class="button" id="cancelBtn">Cancel</button>
+        <button type="button" class="button default" id="selectBtn" disabled>Select Folder</button>
+    </div>
+</div>
+
+<script>
+let currentPath = '';
+let selectedPath = '';
+
+function loadFolders(path) {
+    const folderList = document.getElementById('folderList');
+    folderList.innerHTML = '<div class="folder-item">Loading folders...</div>';
+    
+    fetch(`{% url 'admin:get_folders' %}?path=${encodeURIComponent(path)}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.folders && data.folders.length > 0) {
+                folderList.innerHTML = '';
+                data.folders.forEach(folder => {
+                    const folderItem = document.createElement('div');
+                    folderItem.className = 'folder-item';
+                    folderItem.dataset.path = folder.path;
+                    folderItem.innerHTML = `
+                        <span class="folder-icon">📁</span>
+                        <span class="folder-name">${folder.name}</span>
+                        <span class="folder-path">${folder.path}</span>
+                    `;
+                    folderItem.addEventListener('click', () => {
+                        document.querySelectorAll('.folder-item').forEach(item => {
+                            item.classList.remove('selected');
+                        });
+                        folderItem.classList.add('selected');
+                        selectedPath = folder.path;
+                        document.getElementById('selectBtn').disabled = false;
+                    });
+                    folderItem.addEventListener('dblclick', () => {
+                        currentPath = folder.path;
+                        updateBreadcrumb();
+                        loadFolders(folder.path);
+                    });
+                    folderList.appendChild(folderItem);
+                });
+            } else {
+                folderList.innerHTML = '<div class="folder-item">No subfolders found</div>';
+            }
+        })
+        .catch(error => {
+            folderList.innerHTML = '<div class="folder-item">Error loading folders</div>';
+            console.error('Error:', error);
+        });
+}
+
+function updateBreadcrumb() {
+    const breadcrumb = document.getElementById('breadcrumb');
+    const parts = currentPath.split('/').filter(part => part);
+    
+    let breadcrumbHTML = '<span class="breadcrumb-item" data-path="">Root</span>';
+    
+    let accumulatedPath = '';
+    parts.forEach(part => {
+        accumulatedPath += '/' + part;
+        breadcrumbHTML += ` / <span class="breadcrumb-item" data-path="${accumulatedPath}">${part}</span>`;
+    });
+    
+    breadcrumb.innerHTML = breadcrumbHTML;
+    
+    // Add click events to breadcrumb items
+    breadcrumb.querySelectorAll('.breadcrumb-item').forEach(item => {
+        item.addEventListener('click', () => {
+            currentPath = item.dataset.path;
+            updateBreadcrumb();
+            loadFolders(currentPath);
+        });
+    });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    loadFolders('');
+    updateBreadcrumb();
+    
+    document.getElementById('selectBtn').addEventListener('click', function() {
+        if (selectedPath) {
+            // Return the selected path to the parent window
+            if (window.opener) {
+                window.opener.document.querySelector('#id_folder_path').value = selectedPath;
+                window.close();
+            }
+        }
+    });
+    
+    document.getElementById('cancelBtn').addEventListener('click', function() {
+        window.close();
+    });
+});
+</script>
+{% endblock %}
