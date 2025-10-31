@@ -155,6 +155,6 @@ admin.site.register(FolderPermission, FolderPermissionAdmin)
 admin.site.register(FileActivity, FileActivityAdmin)
 
 # Custom admin site header
-admin.site.site_header = "SNC Vessels File Manager Administration"
+admin.site.site_header = "SNSeaFile Administration"
 admin.site.site_title = "SNC Admin"
-admin.site.index_title = "Welcome to SNC Vessels File Manager Admin"
+admin.site.index_title = "Welcome to SNSeaFile Admin Portal"

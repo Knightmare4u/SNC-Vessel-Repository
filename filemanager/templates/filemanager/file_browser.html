@@ -20,10 +20,14 @@
         </div>
         
         <div style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
-            <div style="position: relative;">
-                <input type="text" id="searchInput" placeholder="Search files..." 
-                       style="padding: 0.75rem; border: 1px solid #d1d5db; border-radius: 5px; width: 250px;">
-            </div>
+            <div style="position: relative; display: flex;">
+    <input type="text" id="searchInput" placeholder="Search files..." 
+           style="padding: 0.75rem; border: 1px solid #d1d5db; border-radius: 5px 0 0 5px; width: 250px; border-right: none;">
+    <button class="btn btn-secondary btn-sm" onclick="performSearch(document.getElementById('searchInput').value)" 
+            style="border-radius: 0 5px 5px 0; border-left: none;">
+        🔍
+    </button>
+</div>
             
             {% if can_create_folder %}
             <button class="btn btn-secondary btn-sm" id="createFolderBtn">
@@ -424,5 +428,167 @@ document.addEventListener('DOMContentLoaded', function() {
         uploadZone.style.display = 'block';
     }
 });
+
+// Search functionality
+document.addEventListener('DOMContentLoaded', function() {
+    const searchInput = document.getElementById('searchInput');
+    
+    if (searchInput) {
+        // Search on Enter key
+        searchInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                performSearch(this.value);
+            }
+        });
+        
+        // Optional: Search on input change with debounce
+        let searchTimeout;
+        searchInput.addEventListener('input', function(e) {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(() => {
+                if (this.value.length >= 2 || this.value.length === 0) {
+                    performSearch(this.value);
+                }
+            }, 500);
+        });
+    }
+});
+
+async function performSearch(query) {
+    if (!query.trim()) {
+        // If search is empty, reload the normal file browser
+        location.reload();
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/search/?q=${encodeURIComponent(query)}`);
+        const result = await response.json();
+        
+        displaySearchResults(result.results, query);
+    } catch (error) {
+        console.error('Search error:', error);
+        alert('Error performing search: ' + error.message);
+    }
+}
+
+function displaySearchResults(results, query) {
+    const tableBody = document.querySelector('tbody');
+    const folderStats = document.querySelector('.card > div:last-child');
+    const uploadZone = document.getElementById('uploadZone');
+    const uploadProgress = document.getElementById('uploadProgress');
+    
+    // Hide upload sections during search
+    if (uploadZone) uploadZone.style.display = 'none';
+    if (uploadProgress) uploadProgress.style.display = 'none';
+    
+    if (results.length === 0) {
+        tableBody.innerHTML = `
+            <tr>
+                <td colspan="4" style="padding: 3rem; text-align: center; color: var(--gray);">
+                    <div style="font-size: 3rem; margin-bottom: 1rem;">🔍</div>
+                    <h3>No files found</h3>
+                    <p>No results found for "${query}"</p>
+                    <button class="btn btn-secondary btn-sm" onclick="clearSearch()">
+                        Clear Search
+                    </button>
+                </td>
+            </tr>
+        `;
+    } else {
+        let html = '';
+        results.forEach(item => {
+            const modifiedDate = new Date(item.modified * 1000).toLocaleString();
+            
+            html += `
+                <tr style="border-bottom: 1px solid #e5e7eb; transition: background-color 0.2s;" 
+                    onmouseover="this.style.backgroundColor='var(--light-gray)'" 
+                    onmouseout="this.style.backgroundColor='var(--white)'">
+                    <td style="padding: 1rem;">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <div style="font-size: 1.5rem;">
+                                ${item.icon}
+                            </div>
+                            <div>
+                                <span style="font-weight: 500;">${item.name}</span>
+                                <div style="font-size: 0.875rem; color: var(--gray);">
+                                    In: ${item.folder || 'Root'}
+                                </div>
+                            </div>
+                        </div>
+                    </td>
+                    <td style="padding: 1rem; color: var(--gray);">
+                        ${item.formatted_size}
+                    </td>
+                    <td style="padding: 1rem; color: var(--gray);">
+                        ${modifiedDate}
+                    </td>
+                    <td style="padding: 1rem; text-align: center;">
+                        <div style="display: flex; gap: 0.5rem; justify-content: center;">
+                            <button class="btn btn-secondary btn-sm download-btn" 
+                                    data-filepath="${item.path}"
+                                    title="Download">
+                                ⬇️
+                            </button>
+                            <button class="btn btn-secondary btn-sm preview-btn" 
+                                    data-filepath="${item.path}"
+                                    title="Preview Info">
+                                👁️
+                            </button>
+                            ${document.querySelector('.delete-btn') ? `
+                            <button class="btn btn-danger btn-sm delete-btn" 
+                                    data-filepath="${item.path}"
+                                    data-filename="${item.name}"
+                                    title="Delete">
+                                🗑️
+                            </button>
+                            ` : ''}
+                        </div>
+                    </td>
+                </tr>
+            `;
+        });
+        
+        // Add search header
+        html = `
+            <tr>
+                <td colspan="4" style="padding: 1rem; background: var(--light-blue); border-bottom: 2px solid var(--secondary-blue);">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <strong>Search Results for "${query}"</strong>
+                            <div style="font-size: 0.875rem; color: var(--gray);">
+                                Found ${results.length} file(s)
+                            </div>
+                        </div>
+                        <button class="btn btn-secondary btn-sm" onclick="clearSearch()">
+                            Clear Search
+                        </button>
+                    </div>
+                </td>
+            </tr>
+            ${html}
+        `;
+        
+        tableBody.innerHTML = html;
+    }
+    
+    // Update folder stats or hide them
+    if (folderStats) {
+        folderStats.innerHTML = `
+            <div style="display: flex; gap: 2rem; color: var(--gray); font-size: 0.875rem;">
+                <div><strong>${results.length}</strong> files found</div>
+                <div><strong>${results.reduce((sum, item) => sum + item.size, 0)}</strong> total size</div>
+            </div>
+        `;
+    }
+}
+
+function clearSearch() {
+    const searchInput = document.getElementById('searchInput');
+    if (searchInput) {
+        searchInput.value = '';
+    }
+    location.reload();
+}
 </script>
 {% endblock %}
