@@ -1,26 +1,35 @@
 import json
 import mimetypes
 import os
+import shutil
 import urllib.parse
 import uuid
+from datetime import datetime
 from wsgiref.util import FileWrapper
 
 from django.conf import settings
 from django.contrib import messages
-from django.contrib.auth import authenticate
+from django.contrib.auth import REDIRECT_FIELD_NAME, authenticate
 from django.contrib.auth import login
 from django.contrib.auth import login as auth_login
 from django.contrib.auth import update_session_auth_hash
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import PasswordChangeForm
 from django.db.models import Q
-from django.http import HttpResponse, JsonResponse
+from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.text import get_valid_filename
 from django.views.decorators.csrf import csrf_exempt
 
 from .models import FileActivity, FolderPermission, UploadSession, UserProfile
-from .utils import format_file_size, get_user_permissions, has_permission, log_activity
+from .utils import (
+    ZipStream,
+    format_file_size,
+    get_user_permissions,
+    has_permission,
+    log_activity,
+)
 
 
 def custom_login(request):
@@ -34,15 +43,27 @@ def custom_login(request):
 
         if user is not None:
             auth_login(request, user)
-            # Check if password needs to be changed
             profile, created = UserProfile.objects.get_or_create(user=user)
             if not profile.password_changed:
                 return redirect('change_password')
+            next_url = request.POST.get(REDIRECT_FIELD_NAME) or request.GET.get(
+                REDIRECT_FIELD_NAME
+            )
+            if next_url and url_has_allowed_host_and_scheme(
+                next_url, allowed_hosts={request.get_host()}
+            ):
+                return redirect(next_url)
             return redirect('dashboard')
         else:
             messages.error(request, 'Invalid username or password')
 
-    return render(request, 'filemanager/login.html')
+    return render(
+        request,
+        'filemanager/login.html',
+        {
+            REDIRECT_FIELD_NAME: request.GET.get(REDIRECT_FIELD_NAME, ''),
+        },
+    )
 
 
 @login_required
@@ -129,7 +150,10 @@ def file_browser(request, folder_path=''):
                         'path': rel_path,
                         'size': '-',
                         'size_bytes': 0,
-                        'modified': os.path.getmtime(item_path),
+                        'modified': datetime.fromtimestamp(os.path.getmtime(item_path)),
+                        'created_at': datetime.fromtimestamp(
+                            os.path.getctime(item_path)
+                        ),
                         'icon': '📁',
                     }
                 )
@@ -143,7 +167,10 @@ def file_browser(request, folder_path=''):
                         'path': rel_path,
                         'size': format_file_size(size),
                         'size_bytes': size,
-                        'modified': os.path.getmtime(item_path),
+                        'modified': datetime.fromtimestamp(os.path.getmtime(item_path)),
+                        'created_at': datetime.fromtimestamp(
+                            os.path.getctime(item_path)
+                        ),
                         'extension': os.path.splitext(item)[1].lower(),
                         'icon': get_file_icon(os.path.splitext(item)[1].lower()),
                     }
@@ -344,6 +371,50 @@ def get_upload_progress(request, session_id):
         return JsonResponse({'error': 'Session not found'}, status=404)
 
 
+# @login_required
+# def delete_file(request):
+#     if request.method == 'POST':
+#         data = json.loads(request.body)
+#         item_path = data.get('path', '')
+#
+#         if not has_permission(request.user, os.path.dirname(item_path), 'admin'):
+#             return JsonResponse({'error': 'Permission denied'}, status=403)
+#
+#         base_path = settings.FILE_STORAGE_ROOT
+#         full_path = os.path.join(base_path, item_path.lstrip('/'))
+#
+#         try:
+#             if os.path.exists(full_path):
+#                 if os.path.isdir(full_path):
+#                     # Check if folder is empty
+#                     if len(os.listdir(full_path)) > 0:
+#                         return JsonResponse(
+#                             {'error': 'Folder is not empty'}, status=400
+#                         )
+#                     os.rmdir(full_path)
+#                 else:
+#                     file_size = os.path.getsize(full_path)
+#                     os.remove(full_path)
+#
+#                 # Log delete activity
+#                 log_activity(
+#                     request.user,
+#                     os.path.basename(item_path),
+#                     item_path,
+#                     'delete',
+#                     request.META.get('REMOTE_ADDR'),
+#                     file_size if not os.path.isdir(full_path) else 0,
+#                 )
+#
+#                 return JsonResponse({'success': True})
+#             else:
+#                 return JsonResponse({'error': 'File/folder not found'}, status=404)
+#         except Exception as e:
+#             return JsonResponse({'error': str(e)}, status=500)
+#
+#     return JsonResponse({'error': 'Invalid request'}, status=400)
+
+
 @login_required
 def delete_file(request):
     if request.method == 'POST':
@@ -357,31 +428,34 @@ def delete_file(request):
         full_path = os.path.join(base_path, item_path.lstrip('/'))
 
         try:
-            if os.path.exists(full_path):
-                if os.path.isdir(full_path):
-                    # Check if folder is empty
-                    if len(os.listdir(full_path)) > 0:
-                        return JsonResponse(
-                            {'error': 'Folder is not empty'}, status=400
-                        )
-                    os.rmdir(full_path)
-                else:
-                    file_size = os.path.getsize(full_path)
-                    os.remove(full_path)
-
-                # Log delete activity
-                log_activity(
-                    request.user,
-                    os.path.basename(item_path),
-                    item_path,
-                    'delete',
-                    request.META.get('REMOTE_ADDR'),
-                    file_size if not os.path.isdir(full_path) else 0,
-                )
-
-                return JsonResponse({'success': True})
-            else:
+            if not os.path.exists(full_path):
                 return JsonResponse({'error': 'File/folder not found'}, status=404)
+
+            file_size = os.path.getsize(full_path) if os.path.isfile(full_path) else 0
+
+            # Build archive destination path, mirroring the original structure
+            archive_root = str(settings.ARCHIVE_ROOT)
+            archive_dest = os.path.join(archive_root, item_path.lstrip('/'))
+
+            # Avoid overwriting existing archive entries by appending a timestamp
+            if os.path.exists(archive_dest):
+                name, ext = os.path.splitext(archive_dest)
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                archive_dest = f'{name}_{timestamp}{ext}'
+
+            os.makedirs(os.path.dirname(archive_dest), exist_ok=True)
+            shutil.move(full_path, archive_dest)
+
+            log_activity(
+                request.user,
+                os.path.basename(item_path),
+                item_path,
+                'delete',
+                request.META.get('REMOTE_ADDR'),
+                file_size,
+            )
+
+            return JsonResponse({'success': True})
         except Exception as e:
             return JsonResponse({'error': str(e)}, status=500)
 
@@ -434,6 +508,7 @@ def search_files(request):
                                     'extension': file_ext,
                                     'icon': get_file_icon(file_ext),
                                     'modified': os.path.getmtime(file_path),
+                                    'created': os.path.getctime(file_path),
                                 }
                             )
 
@@ -460,6 +535,86 @@ def create_folder(request):
             return JsonResponse({'error': str(e)}, status=500)
 
     return JsonResponse({'error': 'Invalid request'}, status=400)
+
+
+# @login_required
+# def bulk_download(request):
+#     if request.method != 'POST':
+#         return JsonResponse({'error': 'Invalid request'}, status=400)
+#
+#     file_paths = request.POST.getlist('paths')
+#
+#     if not file_paths:
+#         return JsonResponse({'error': 'No files selected'}, status=400)
+#
+#     base_path = settings.FILE_STORAGE_ROOT
+#     buffer = io.BytesIO()
+#
+#     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as zf:
+#         for file_path in file_paths:
+#             if not has_permission(request.user, os.path.dirname(file_path), 'read'):
+#                 continue
+#             full_path = os.path.join(base_path, file_path.lstrip('/'))
+#             if not os.path.abspath(full_path).startswith(os.path.abspath(base_path)):
+#                 continue
+#             if os.path.exists(full_path) and os.path.isfile(full_path):
+#                 zf.write(full_path, os.path.basename(full_path))
+#                 log_activity(
+#                     request.user,
+#                     os.path.basename(file_path),
+#                     file_path,
+#                     'download',
+#                     request.META.get('REMOTE_ADDR'),
+#                     os.path.getsize(full_path),
+#                 )
+#
+#     buffer.seek(0)
+#     response = HttpResponse(buffer.read(), content_type='application/zip')
+#     response['Content-Disposition'] = 'attachment; filename="download.zip"'
+#     return response
+
+
+@login_required
+def bulk_download(request):
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Invalid request'}, status=400)
+
+    file_paths = request.POST.getlist('paths')
+    if not file_paths:
+        return JsonResponse({'error': 'No files selected'}, status=400)
+
+    base_path = settings.FILE_STORAGE_ROOT
+    valid_files = []
+    for file_path in file_paths:
+        if not has_permission(request.user, os.path.dirname(file_path), 'read'):
+            continue
+        full_path = os.path.join(base_path, file_path.lstrip('/'))
+        if not os.path.abspath(full_path).startswith(os.path.abspath(base_path)):
+            continue
+        if os.path.exists(full_path) and os.path.isfile(full_path):
+            valid_files.append((file_path, full_path))
+
+    if not valid_files:
+        return JsonResponse({'error': 'No accessible files'}, status=404)
+
+    for file_path, full_path in valid_files:
+        log_activity(
+            request.user,
+            os.path.basename(file_path),
+            file_path,
+            'download',
+            request.META.get('REMOTE_ADDR'),
+            os.path.getsize(full_path),
+        )
+
+    files_to_zip = [
+        (os.path.basename(file_path), full_path) for file_path, full_path in valid_files
+    ]
+    response = StreamingHttpResponse(
+        ZipStream(files_to_zip), content_type='application/zip'
+    )
+    response['Content-Disposition'] = 'attachment; filename="download.zip"'
+    return response
 
 
 @login_required

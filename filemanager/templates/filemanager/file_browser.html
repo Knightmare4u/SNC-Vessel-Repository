@@ -1,5 +1,76 @@
-{% extends 'base.html' %}
+﻿{% extends 'base.html' %}
 {% load static %}
+
+{% block extra_css %}
+<style>
+.custom-checkbox {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 18px;
+    height: 18px;
+    border: 2px solid #cbd5e1;
+    border-radius: 4px;
+    background: #fff;
+    cursor: pointer;
+    position: relative;
+    transition: border-color 0.15s, background 0.15s;
+}
+.custom-checkbox:hover { border-color: var(--secondary-blue); }
+.custom-checkbox:checked {
+    background: var(--secondary-blue);
+    border-color: var(--secondary-blue);
+}
+.custom-checkbox:checked::after {
+    content: '';
+    position: absolute;
+    left: 3px; top: 0px;
+    width: 5px; height: 9px;
+    border: 2px solid #fff;
+    border-top: none; border-left: none;
+    transform: rotate(45deg);
+}
+.custom-checkbox:indeterminate {
+    background: var(--secondary-blue);
+    border-color: var(--secondary-blue);
+}
+.custom-checkbox:indeterminate::after {
+    content: '';
+    position: absolute;
+    left: 2px; top: 6px;
+    width: 10px; height: 2px;
+    background: #fff; border-radius: 1px;
+}
+tr[data-type="file"] { cursor: pointer; }
+.copy-link-btn {
+    background: #f97316 !important;
+    color: #fff !important;
+    border: 1.5px solid #f97316 !important;
+    border-radius: 5px;
+    padding: 0.25rem 0.5rem;
+    cursor: pointer;
+    font-size: 1rem;
+    transition: background 0.15s;
+}
+.copy-link-btn:hover { background: #ea580c !important; border-color: #ea580c !important; }
+#copy-toast {
+    position: fixed;
+    bottom: 2rem;
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: #1e293b;
+    color: #fff;
+    padding: 0.6rem 1.4rem;
+    border-radius: 999px;
+    font-size: 0.875rem;
+    font-weight: 500;
+    opacity: 0;
+    transition: opacity 0.2s, transform 0.2s;
+    pointer-events: none;
+    z-index: 9999;
+}
+#copy-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+{% endblock %}
 
 {% block title %}File Browser - SNC{% endblock %}
 
@@ -18,23 +89,23 @@
                 {% endfor %}
             </div>
         </div>
-        
+
         <div style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
             <div style="position: relative; display: flex;">
-    <input type="text" id="searchInput" placeholder="Search files..." 
+    <input type="text" id="searchInput" placeholder="Search files..."
            style="padding: 0.75rem; border: 1px solid #d1d5db; border-radius: 5px 0 0 5px; width: 250px; border-right: none;">
-    <button class="btn btn-secondary btn-sm" onclick="performSearch(document.getElementById('searchInput').value)" 
+    <button class="btn btn-secondary btn-sm" onclick="performSearch(document.getElementById('searchInput').value)"
             style="border-radius: 0 5px 5px 0; border-left: none;">
         🔍
     </button>
 </div>
-            
+
             {% if can_create_folder %}
             <button class="btn btn-secondary btn-sm" id="createFolderBtn">
                 📁 New Folder
             </button>
             {% endif %}
-            
+
             {% if can_upload %}
             <button class="btn btn-primary btn-sm" onclick="document.getElementById('fileInput').click()">
                 📤 Upload Files
@@ -53,27 +124,65 @@
 
     <!-- Upload Progress -->
     <div id="uploadProgress" style="display: none; margin-bottom: 2rem;">
-        <h3>Upload Progress</h3>
-        <div id="uploadList"></div>
+        <div style="margin-bottom: 0.4rem; font-size: 0.8rem; color: var(--gray); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Overall Progress</div>
+        <div style="background: #e5e7eb; border-radius: 999px; height: 16px; overflow: hidden; margin-bottom: 0.5rem;">
+            <div id="progressBar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #1a56db, #3b82f6); transition: width 0.2s ease; border-radius: 999px;"></div>
+        </div>
+        <div style="display: flex; justify-content: space-between; font-size: 0.875rem; color: var(--gray); margin-bottom: 0.5rem;">
+            <span id="progressText">Uploading...</span>
+            <span id="progressPercent" style="font-weight: bold; color: var(--primary-blue);">0%</span>
+        </div>
+        <div id="progressStatus" style="font-size: 0.875rem;"></div>
     </div>
     {% endif %}
+
+    <!-- Bulk Action Bar -->
+    <div id="bulkActionBar" style="display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 999; padding: 0.75rem 1.5rem; background: var(--light-blue); border-bottom: 2px solid var(--secondary-blue); align-items: center; gap: 1rem; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+        <span id="selectedCount" style="font-weight: 600; color: var(--primary-blue);"></span>
+        <button class="btn btn-primary btn-sm" onclick="bulkDownload()">⬇️ Download Selected</button>
+        <button class="btn btn-secondary btn-sm" onclick="clearSelection()">Clear Selection</button>
+    </div>
 
     <!-- Files List -->
     <div style="overflow-x: auto;">
         <table style="width: 100%; border-collapse: collapse; background: var(--white);">
-            <thead>
+            <thead style="position: sticky; top: 0; z-index: 10;">
                 <tr style="background: var(--light-gray);">
-                    <th style="padding: 1rem; text-align: left; border-bottom: 2px solid #e5e7eb;">Name</th>
-                    <th style="padding: 1rem; text-align: left; border-bottom: 2px solid #e5e7eb; width: 120px;">Size</th>
-                    <th style="padding: 1rem; text-align: left; border-bottom: 2px solid #e5e7eb; width: 180px;">Modified</th>
+                    <th style="padding: 1rem; text-align: center; border-bottom: 2px solid #e5e7eb; width: 40px;">
+                        <input type="checkbox" id="selectAll" class="custom-checkbox" title="Select All Files">
+                    </th>
+                    <th onclick="sortTable('name')" style="padding: 1rem; text-align: left; border-bottom: 2px solid #e5e7eb; cursor: pointer; user-select: none;">
+                        Name <span id="sort-indicator-name" style="font-size: 0.75rem; color: var(--gray);">⇅</span>
+                    </th>
+                    <th onclick="sortTable('size')" style="padding: 1rem; text-align: left; border-bottom: 2px solid #e5e7eb; width: 120px; cursor: pointer; user-select: none;">
+                        Size <span id="sort-indicator-size" style="font-size: 0.75rem; color: var(--gray);">⇅</span>
+                    </th>
+                    <th onclick="sortTable('modified')" style="padding: 1rem; text-align: left; border-bottom: 2px solid #e5e7eb; width: 180px; cursor: pointer; user-select: none;">
+                        Modified <span id="sort-indicator-modified" style="font-size: 0.75rem; color: var(--gray);">⇅</span>
+                    </th>
+                    <th onclick="sortTable('created')" style="padding: 1rem; text-align: left; border-bottom: 2px solid #e5e7eb; width: 180px; cursor: pointer; user-select: none;">
+                        Created <span id="sort-indicator-created" style="font-size: 0.75rem; color: var(--gray);">⇅</span>
+                    </th>
                     <th style="padding: 1rem; text-align: center; border-bottom: 2px solid #e5e7eb; width: 150px;">Actions</th>
                 </tr>
             </thead>
             <tbody>
                 {% for item in items %}
-                <tr style="border-bottom: 1px solid #e5e7eb; transition: background-color 0.2s;" 
-                    onmouseover="this.style.backgroundColor='var(--light-gray)'" 
-                    onmouseout="this.style.backgroundColor='var(--white)'">
+                <tr style="border-bottom: 1px solid #e5e7eb; transition: background-color 0.2s;"
+                    onmouseover="this.style.backgroundColor='var(--light-gray)'"
+                    onmouseout="this.style.backgroundColor='var(--white)'"
+                    data-name="{{ item.name|lower }}"
+                    data-size-bytes="{{ item.size_bytes }}"
+                    data-modified="{{ item.modified|date:'U' }}"
+                    data-created="{{ item.created_at|date:'U' }}"
+                    data-type="{{ item.type }}">
+                    <td style="padding: 1rem; text-align: center;">
+                        {% if item.type == 'file' %}
+                        <input type="checkbox" class="file-checkbox custom-checkbox"
+                               data-filepath="{{ item.path }}"
+                               data-filename="{{ item.name }}">
+                        {% endif %}
+                    </td>
                     <td style="padding: 1rem;">
                         <div style="display: flex; align-items: center; gap: 0.75rem;">
                             <div style="font-size: 1.5rem;">
@@ -85,7 +194,7 @@
                             </div>
                             <div>
                                 {% if item.type == 'folder' %}
-                                    <a href="{% url 'file_browser' item.path %}" 
+                                    <a href="{% url 'file_browser' item.path %}"
                                        style="text-decoration: none; color: var(--primary-blue); font-weight: 500;">
                                         {{ item.name }}
                                     </a>
@@ -108,29 +217,37 @@
                     <td style="padding: 1rem; color: var(--gray);">
                         {{ item.modified|date:"M d, Y H:i" }}
                     </td>
+                    <td style="padding: 1rem; color: var(--gray);">
+                        {{ item.created_at|date:"M d, Y H:i" }}
+                    </td>
                     <td style="padding: 1rem; text-align: center;">
                         <div style="display: flex; gap: 0.5rem; justify-content: center;">
                             {% if item.type == 'file' %}
-                                <button class="btn btn-secondary btn-sm download-btn" 
+                                <button class="btn btn-secondary btn-sm download-btn"
                                         data-filepath="{{ item.path }}"
                                         title="Download">
                                     ⬇️
                                 </button>
-                                <button class="btn btn-secondary btn-sm preview-btn" 
+                                <button class="btn btn-secondary btn-sm preview-btn"
                                         data-filepath="{{ item.path }}"
                                         title="Preview Info">
                                     👁️
                                 </button>
+                                <button class="btn btn-sm copy-link-btn"
+                                        data-filepath="{{ item.path }}"
+                                        title="Copy Download Link">
+                                    🔗
+                                </button>
                             {% else %}
-                                <a href="{% url 'file_browser' item.path %}" 
+                                <a href="{% url 'file_browser' item.path %}"
                                    class="btn btn-secondary btn-sm"
                                    title="Open Folder">
                                     📂
                                 </a>
                             {% endif %}
-                            
+
                             {% if can_delete %}
-                                <button class="btn btn-danger btn-sm delete-btn" 
+                                <button class="btn btn-danger btn-sm delete-btn"
                                         data-filepath="{{ item.path }}"
                                         data-filename="{{ item.name }}"
                                         title="Delete">
@@ -142,7 +259,7 @@
                 </tr>
                 {% empty %}
                 <tr>
-                    <td colspan="4" style="padding: 3rem; text-align: center; color: var(--gray);">
+                    <td colspan="5" style="padding: 3rem; text-align: center; color: var(--gray);">
                         <div style="font-size: 3rem; margin-bottom: 1rem;">📁</div>
                         <h3>This folder is empty</h3>
                         <p>{% if can_upload %}Upload some files to get started!{% else %}No files available.{% endif %}</p>
@@ -171,7 +288,7 @@
         <span class="close-modal" style="position: absolute; right: 1rem; top: 1rem; font-size: 1.5rem; cursor: pointer; color: var(--gray);">&times;</span>
         <h3 style="margin-bottom: 1rem;">Create New Folder</h3>
         <div style="margin: 1.5rem 0;">
-            <input type="text" id="folderName" placeholder="Enter folder name" 
+            <input type="text" id="folderName" placeholder="Enter folder name"
                    style="width: 100%; padding: 0.75rem; border: 1px solid #d1d5db; border-radius: 5px;">
         </div>
         <button class="btn btn-primary" onclick="createFolder()" style="width: 100%;">
@@ -181,8 +298,21 @@
 </div>
 
 <!-- Hidden file input for uploads -->
-<input type="file" id="fileInput" multiple style="display: none;" 
+<input type="file" id="fileInput" multiple style="display: none;"
        accept="*/*" data-max-size="10737418240">
+
+<!-- Copy Link Toast -->
+<div id="copy-toast">🔗 Link copied to clipboard!</div>
+
+<!-- Bulk Download Loading Overlay -->
+<div id="downloadOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
+    <div style="background:white; padding:2.5rem 3rem; border-radius:12px; text-align:center; box-shadow:0 8px 32px rgba(0,0,0,0.2);">
+        <div style="font-size:2.5rem; margin-bottom:1rem;">⏳</div>
+        <h3 style="margin-bottom:0.5rem;">Packaging files...</h3>
+        <p style="color:var(--gray); margin:0;">The download dialog will appear shortly.</p>
+    </div>
+</div>
+
 
 {% endblock %}
 
@@ -218,28 +348,31 @@ document.addEventListener('DOMContentLoaded', function() {
     const createFolderBtn = document.getElementById('createFolderBtn');
     const createFolderModal = document.getElementById('createFolderModal');
     const closeModal = document.querySelector('.close-modal');
-    
+
     if (createFolderBtn && createFolderModal) {
         createFolderBtn.addEventListener('click', () => {
             createFolderModal.style.display = 'block';
         });
-        
+
         closeModal.addEventListener('click', () => {
             createFolderModal.style.display = 'none';
         });
-        
+
         window.addEventListener('click', (e) => {
             if (e.target === createFolderModal) {
                 createFolderModal.style.display = 'none';
             }
         });
     }
-    
+
     // File action handlers
     document.addEventListener('click', function(e) {
         if (e.target.classList.contains('download-btn')) {
             const filePath = e.target.dataset.filepath;
             downloadFile(filePath);
+        } else if (e.target.classList.contains('copy-link-btn')) {
+            const filePath = e.target.dataset.filepath;
+            copyDownloadLink(e.target, filePath);
         } else if (e.target.classList.contains('delete-btn')) {
             const filePath = e.target.dataset.filepath;
             const fileName = e.target.dataset.filename;
@@ -249,23 +382,23 @@ document.addEventListener('DOMContentLoaded', function() {
             previewFile(filePath);
         }
     });
-    
+
     // Upload zone functionality
     const uploadZone = document.getElementById('uploadZone');
     const fileInput = document.getElementById('fileInput');
-    
+
     if (uploadZone && fileInput) {
         // Show upload zone
         uploadZone.style.display = 'block';
-        
+
         uploadZone.addEventListener('click', () => fileInput.click());
-        
+
         uploadZone.addEventListener('dragover', (e) => {
             e.preventDefault();
             uploadZone.style.backgroundColor = 'var(--secondary-blue)';
             uploadZone.style.color = 'var(--white)';
         });
-        
+
         uploadZone.addEventListener('dragleave', (e) => {
             e.preventDefault();
             if (!uploadZone.contains(e.relatedTarget)) {
@@ -273,7 +406,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 uploadZone.style.color = 'inherit';
             }
         });
-        
+
         uploadZone.addEventListener('drop', (e) => {
             e.preventDefault();
             uploadZone.style.backgroundColor = 'var(--light-blue)';
@@ -281,7 +414,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const files = e.dataTransfer.files;
             handleFileUpload(files);
         });
-        
+
         fileInput.addEventListener('change', (e) => {
             handleFileUpload(e.target.files);
         });
@@ -291,12 +424,12 @@ document.addEventListener('DOMContentLoaded', function() {
 async function createFolder() {
     const folderName = document.getElementById('folderName').value.trim();
     const folderPath = document.getElementById('currentFolderPath').value;
-    
+
     if (!folderName) {
         alert('Please enter a folder name');
         return;
     }
-    
+
     try {
         const response = await fetch('/create-folder/', {
             method: 'POST',
@@ -309,9 +442,9 @@ async function createFolder() {
                 folder_name: folderName
             })
         });
-        
+
         const result = await response.json();
-        
+
         if (result.success) {
             location.reload();
         } else {
@@ -326,7 +459,7 @@ async function deleteFile(filePath, fileName) {
     if (!confirm(`Are you sure you want to delete "${fileName}"?`)) {
         return;
     }
-    
+
     try {
         const response = await fetch('/delete/', {
             method: 'POST',
@@ -338,9 +471,9 @@ async function deleteFile(filePath, fileName) {
                 path: filePath
             })
         });
-        
+
         const result = await response.json();
-        
+
         if (result.success) {
             location.reload();
         } else {
@@ -355,11 +488,20 @@ function downloadFile(filePath) {
     window.open(`/download/${filePath}`, '_blank');
 }
 
+function copyDownloadLink(btn, filePath) {
+    const url = `${window.location.origin}/download/${filePath}`;
+    navigator.clipboard.writeText(url).then(() => {
+        const toast = document.getElementById('copy-toast');
+        toast.classList.add('show');
+        setTimeout(() => toast.classList.remove('show'), 2000);
+    });
+}
+
 async function previewFile(filePath) {
     try {
         const response = await fetch(`/preview/${filePath}`);
         const result = await response.json();
-        
+
         if (result.file) {
             alert(`File Information:\n\nName: ${result.file.name}\nSize: ${result.file.formatted_size}\nType: ${result.file.extension}\nPath: ${result.file.path}`);
         } else {
@@ -370,55 +512,77 @@ async function previewFile(filePath) {
     }
 }
 
+function formatBytes(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
 function handleFileUpload(files) {
     if (files.length === 0) return;
-    
+
     const formData = new FormData();
     const folderPath = document.getElementById('currentFolderPath').value;
-    
-    console.log('Uploading to folder:', folderPath);
-    console.log('Files to upload:', files.length);
-    
     formData.append('folder_path', folderPath);
-    
+
+    let totalSize = 0;
     for (let i = 0; i < files.length; i++) {
-        console.log('Adding file:', files[i].name);
         formData.append('files', files[i]);
+        totalSize += files[i].size;
     }
-    
-    // Show upload progress
+
     const uploadProgress = document.getElementById('uploadProgress');
-    const uploadList = document.getElementById('uploadList');
-    
+    const progressBar = document.getElementById('progressBar');
+    const progressText = document.getElementById('progressText');
+    const progressPercent = document.getElementById('progressPercent');
+    const progressStatus = document.getElementById('progressStatus');
+
+    progressBar.style.background = 'linear-gradient(90deg, #1a56db, #3b82f6)';
+    progressBar.style.width = '0%';
+    progressPercent.textContent = '0%';
+    progressText.textContent = 'Uploading...';
+    progressStatus.textContent = '';
     uploadProgress.style.display = 'block';
-    uploadList.innerHTML = '<div>Starting upload...</div>';
-    
-    fetch('/upload/', {
-        method: 'POST',
-        body: formData,
-        headers: {
-            'X-CSRFToken': getCSRFToken()
-        }
-    })
-    .then(response => {
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return response.json();
-    })
-    .then(result => {
-        console.log('Upload result:', result);
-        if (result.success) {
-            uploadList.innerHTML = '<div style="color: var(--success-green); padding: 1rem; text-align: center;">✅ Upload completed! Reloading page...</div>';
-            setTimeout(() => location.reload(), 1500);
-        } else {
-            uploadList.innerHTML = `<div style="color: var(--error-red); padding: 1rem;">❌ Upload failed: ${result.error}</div>`;
-        }
-    })
-    .catch(error => {
-        console.error('Upload error:', error);
-        uploadList.innerHTML = `<div style="color: var(--error-red); padding: 1rem;">❌ Upload error: ${error.message}</div>`;
+
+    const xhr = new XMLHttpRequest();
+
+    xhr.upload.addEventListener('progress', function(e) {
+        if (!e.lengthComputable) return;
+        const percent = Math.round((e.loaded / e.total) * 100);
+        progressBar.style.width = percent + '%';
+        progressPercent.textContent = percent + '%';
+        progressText.textContent = formatBytes(e.loaded) + ' / ' + formatBytes(e.total);
     });
+
+    xhr.addEventListener('load', function() {
+        if (xhr.status === 200) {
+            let result;
+            try { result = JSON.parse(xhr.responseText); } catch { result = {}; }
+            if (result.success) {
+                progressBar.style.width = '100%';
+                progressPercent.textContent = '100%';
+                progressStatus.innerHTML = '<div style="display:inline-flex;align-items:center;gap:0.4rem;background:#f0fdf4;color:#16a34a;padding:0.35rem 0.75rem;border-radius:999px;font-size:0.85rem;font-weight:500;">✅ Upload complete! Reloading...</div>';
+                setTimeout(() => location.reload(), 1500);
+            } else {
+                progressBar.style.background = '#ef4444';
+                progressStatus.innerHTML = '<div style="display:inline-flex;align-items:center;gap:0.4rem;background:#fee2e2;color:#dc2626;padding:0.35rem 0.75rem;border-radius:999px;font-size:0.85rem;font-weight:500;">❌ Upload failed: ' + (result.error || 'Unknown error') + '</div>';
+            }
+        } else {
+            progressBar.style.background = '#ef4444';
+            progressStatus.innerHTML = '<div style="display:inline-flex;align-items:center;gap:0.4rem;background:#fee2e2;color:#dc2626;padding:0.35rem 0.75rem;border-radius:999px;font-size:0.85rem;font-weight:500;">❌ Upload failed: HTTP ' + xhr.status + '</div>';
+        }
+    });
+
+    xhr.addEventListener('error', function() {
+        progressBar.style.background = '#ef4444';
+        progressStatus.innerHTML = '<div style="display:inline-flex;align-items:center;gap:0.4rem;background:#fee2e2;color:#dc2626;padding:0.35rem 0.75rem;border-radius:999px;font-size:0.85rem;font-weight:500;">❌ Upload error occurred</div>';
+    });
+
+    xhr.open('POST', '/upload/');
+    xhr.setRequestHeader('X-CSRFToken', getCSRFToken());
+    xhr.send(formData);
 }
 
 // Show upload zone when page loads if user can upload
@@ -432,7 +596,7 @@ document.addEventListener('DOMContentLoaded', function() {
 // Search functionality
 document.addEventListener('DOMContentLoaded', function() {
     const searchInput = document.getElementById('searchInput');
-    
+
     if (searchInput) {
         // Search on Enter key
         searchInput.addEventListener('keypress', function(e) {
@@ -440,7 +604,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 performSearch(this.value);
             }
         });
-        
+
         // Optional: Search on input change with debounce
         let searchTimeout;
         searchInput.addEventListener('input', function(e) {
@@ -460,11 +624,11 @@ async function performSearch(query) {
         location.reload();
         return;
     }
-    
+
     try {
         const response = await fetch(`/search/?q=${encodeURIComponent(query)}`);
         const result = await response.json();
-        
+
         displaySearchResults(result.results, query);
     } catch (error) {
         console.error('Search error:', error);
@@ -477,15 +641,15 @@ function displaySearchResults(results, query) {
     const folderStats = document.querySelector('.card > div:last-child');
     const uploadZone = document.getElementById('uploadZone');
     const uploadProgress = document.getElementById('uploadProgress');
-    
+
     // Hide upload sections during search
     if (uploadZone) uploadZone.style.display = 'none';
     if (uploadProgress) uploadProgress.style.display = 'none';
-    
+
     if (results.length === 0) {
         tableBody.innerHTML = `
             <tr>
-                <td colspan="4" style="padding: 3rem; text-align: center; color: var(--gray);">
+                <td colspan="6" style="padding: 3rem; text-align: center; color: var(--gray);">
                     <div style="font-size: 3rem; margin-bottom: 1rem;">🔍</div>
                     <h3>No files found</h3>
                     <p>No results found for "${query}"</p>
@@ -499,11 +663,12 @@ function displaySearchResults(results, query) {
         let html = '';
         results.forEach(item => {
             const modifiedDate = new Date(item.modified * 1000).toLocaleString();
-            
+
             html += `
-                <tr style="border-bottom: 1px solid #e5e7eb; transition: background-color 0.2s;" 
-                    onmouseover="this.style.backgroundColor='var(--light-gray)'" 
+                <tr style="border-bottom: 1px solid #e5e7eb; transition: background-color 0.2s;"
+                    onmouseover="this.style.backgroundColor='var(--light-gray)'"
                     onmouseout="this.style.backgroundColor='var(--white)'">
+                    <td style="padding: 1rem; text-align: center;"></td>
                     <td style="padding: 1rem;">
                         <div style="display: flex; align-items: center; gap: 0.75rem;">
                             <div style="font-size: 1.5rem;">
@@ -523,20 +688,23 @@ function displaySearchResults(results, query) {
                     <td style="padding: 1rem; color: var(--gray);">
                         ${modifiedDate}
                     </td>
+                    <td style="padding: 1rem; color: var(--gray);">
+                        ${item.created ? new Date(item.created * 1000).toLocaleString() : '—'}
+                    </td>
                     <td style="padding: 1rem; text-align: center;">
                         <div style="display: flex; gap: 0.5rem; justify-content: center;">
-                            <button class="btn btn-secondary btn-sm download-btn" 
+                            <button class="btn btn-secondary btn-sm download-btn"
                                     data-filepath="${item.path}"
                                     title="Download">
                                 ⬇️
                             </button>
-                            <button class="btn btn-secondary btn-sm preview-btn" 
+                            <button class="btn btn-secondary btn-sm preview-btn"
                                     data-filepath="${item.path}"
                                     title="Preview Info">
                                 👁️
                             </button>
                             ${document.querySelector('.delete-btn') ? `
-                            <button class="btn btn-danger btn-sm delete-btn" 
+                            <button class="btn btn-danger btn-sm delete-btn"
                                     data-filepath="${item.path}"
                                     data-filename="${item.name}"
                                     title="Delete">
@@ -548,11 +716,11 @@ function displaySearchResults(results, query) {
                 </tr>
             `;
         });
-        
+
         // Add search header
         html = `
             <tr>
-                <td colspan="4" style="padding: 1rem; background: var(--light-blue); border-bottom: 2px solid var(--secondary-blue);">
+                <td colspan="6" style="padding: 1rem; background: var(--light-blue); border-bottom: 2px solid var(--secondary-blue);">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <div>
                             <strong>Search Results for "${query}"</strong>
@@ -568,10 +736,10 @@ function displaySearchResults(results, query) {
             </tr>
             ${html}
         `;
-        
+
         tableBody.innerHTML = html;
     }
-    
+
     // Update folder stats or hide them
     if (folderStats) {
         folderStats.innerHTML = `
@@ -590,5 +758,150 @@ function clearSearch() {
     }
     location.reload();
 }
+
+// Sort
+let sortState = { col: 'name', dir: 'asc' };
+
+function sortTable(col) {
+    if (sortState.col === col) {
+        sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+        sortState.col = col;
+        sortState.dir = 'asc';
+    }
+
+    const tbody = document.querySelector('tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr[data-type]'));
+    const folders = rows.filter(r => r.dataset.type === 'folder');
+    const files = rows.filter(r => r.dataset.type === 'file');
+
+    const compareFn = (a, b) => {
+        let valA, valB;
+        if (col === 'name') {
+            valA = a.dataset.name;
+            valB = b.dataset.name;
+            return sortState.dir === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+        } else if (col === 'size') {
+            valA = parseInt(a.dataset.sizeBytes, 10);
+            valB = parseInt(b.dataset.sizeBytes, 10);
+            return sortState.dir === 'asc' ? valA - valB : valB - valA;
+        } else if (col === 'modified') {
+            valA = parseInt(a.dataset.modified, 10);
+            valB = parseInt(b.dataset.modified, 10);
+            return sortState.dir === 'asc' ? valA - valB : valB - valA;
+        } else {
+            valA = parseInt(a.dataset.created, 10);
+            valB = parseInt(b.dataset.created, 10);
+            return sortState.dir === 'asc' ? valA - valB : valB - valA;
+        }
+    };
+
+    folders.sort(compareFn);
+    files.sort(compareFn);
+
+    // Re-append in order: folders first, then files
+    [...folders, ...files].forEach(r => tbody.appendChild(r));
+
+    // Update indicators
+    ['name', 'size', 'modified', 'created'].forEach(c => {
+        const el = document.getElementById('sort-indicator-' + c);
+        if (el) el.textContent = c === sortState.col ? (sortState.dir === 'asc' ? '↑' : '↓') : '⇅';
+    });
+}
+
+// Checkbox & bulk download
+function updateBulkBar() {
+    const checked = document.querySelectorAll('.file-checkbox:checked');
+    const all = document.querySelectorAll('.file-checkbox');
+    const bar = document.getElementById('bulkActionBar');
+    const countEl = document.getElementById('selectedCount');
+    const selectAll = document.getElementById('selectAll');
+
+    const thead = document.querySelector('thead');
+    if (checked.length > 0) {
+        bar.style.display = 'flex';
+        countEl.textContent = `${checked.length} file${checked.length > 1 ? 's' : ''} selected`;
+        if (thead) thead.style.top = bar.offsetHeight + 'px';
+    } else {
+        bar.style.display = 'none';
+        if (thead) thead.style.top = '0';
+    }
+
+    if (selectAll) {
+        selectAll.indeterminate = checked.length > 0 && checked.length < all.length;
+        selectAll.checked = all.length > 0 && checked.length === all.length;
+    }
+}
+
+function clearSelection() {
+    document.querySelectorAll('.file-checkbox').forEach(cb => cb.checked = false);
+    updateBulkBar();
+}
+
+function bulkDownload() {
+    const paths = Array.from(document.querySelectorAll('.file-checkbox:checked')).map(cb => cb.dataset.filepath);
+    if (paths.length === 0) return;
+
+    // Show loading overlay
+    const overlay = document.getElementById('downloadOverlay');
+    overlay.style.display = 'flex';
+
+    // Hide overlay when user interacts with the download dialog (page regains focus)
+    const hideOverlay = () => {
+        overlay.style.display = 'none';
+        window.removeEventListener('focus', hideOverlay);
+    };
+    window.addEventListener('focus', hideOverlay);
+    setTimeout(hideOverlay, 60000); // Fallback: hide after 60 seconds
+
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/bulk-download/';
+    form.style.display = 'none';
+
+    const csrf = document.createElement('input');
+    csrf.type = 'hidden';
+    csrf.name = 'csrfmiddlewaretoken';
+    csrf.value = getCSRFToken();
+    form.appendChild(csrf);
+
+    paths.forEach(path => {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'paths';
+        input.value = path;
+        form.appendChild(input);
+    });
+
+    document.body.appendChild(form);
+    form.submit();
+    document.body.removeChild(form);
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    const selectAll = document.getElementById('selectAll');
+    if (selectAll) {
+        selectAll.addEventListener('change', function() {
+            document.querySelectorAll('.file-checkbox').forEach(cb => cb.checked = this.checked);
+            updateBulkBar();
+        });
+    }
+    document.addEventListener('change', function(e) {
+        if (e.target.classList.contains('file-checkbox')) {
+            updateBulkBar();
+        }
+    });
+
+    document.querySelector('tbody').addEventListener('click', function(e) {
+        const row = e.target.closest('tr[data-type="file"]');
+        if (!row) return;
+        if (e.target.closest('a, button, input')) return;
+        const cb = row.querySelector('.file-checkbox');
+        if (cb) {
+            cb.checked = !cb.checked;
+            updateBulkBar();
+        }
+    });
+});
 </script>
 {% endblock %}
