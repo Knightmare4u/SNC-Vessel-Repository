@@ -2,10 +2,13 @@ import json
 import mimetypes
 import os
 import shutil
+import tempfile
 import urllib.parse
 import uuid
 from datetime import datetime
 from wsgiref.util import FileWrapper
+
+from docx2pdf import convert
 
 from django.conf import settings
 from django.contrib import messages
@@ -198,6 +201,7 @@ def file_browser(request, folder_path=''):
         'breadcrumbs': breadcrumbs,
         'can_upload': has_permission(request.user, folder_path, 'write'),
         'can_delete': has_permission(request.user, folder_path, 'admin'),
+        'can_rename': has_permission(request.user, folder_path, 'write'),
         'can_create_folder': has_permission(request.user, folder_path, 'write'),
         'total_size': format_file_size(total_size),
         'file_count': file_count,
@@ -537,6 +541,54 @@ def create_folder(request):
     return JsonResponse({'error': 'Invalid request'}, status=400)
 
 
+@login_required
+def rename_file(request):
+    if request.method == 'POST':
+        data = json.loads(request.body)
+        old_path = data.get('old_path', '')
+        new_name = data.get('new_name', '').strip()
+
+        if not new_name:
+            return JsonResponse({'error': 'New name is required'}, status=400)
+
+        folder = os.path.dirname(old_path)
+        if not has_permission(request.user, folder, 'write'):
+            return JsonResponse({'error': 'Permission denied'}, status=403)
+
+        new_name = get_valid_filename(new_name)
+        base_path = settings.FILE_STORAGE_ROOT
+        full_old = os.path.join(base_path, old_path.lstrip('/'))
+        full_new = os.path.join(base_path, folder.lstrip('/'), new_name)
+
+        if not os.path.exists(full_old):
+            return JsonResponse({'error': 'File not found'}, status=404)
+
+        if full_old != full_new and os.path.exists(full_new):
+            return JsonResponse({'error': 'A file with that name already exists'}, status=400)
+
+        if full_old == full_new:
+            return JsonResponse({'success': True, 'new_path': os.path.join(folder, new_name).replace('\\', '/')})
+
+        try:
+            os.rename(full_old, full_new)
+            os.utime(full_new, None)
+            modified_ts = os.path.getmtime(full_new)
+            modified_str = datetime.fromtimestamp(modified_ts).strftime('%b %d, %Y %H:%M')
+            new_path = os.path.join(folder, new_name).replace('\\', '/')
+            log_activity(
+                request.user,
+                f"{os.path.basename(old_path)} → {new_name}",
+                new_path,
+                'rename',
+                request.META.get('REMOTE_ADDR'),
+            )
+            return JsonResponse({'success': True, 'new_path': new_path, 'modified': modified_str})
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=500)
+
+    return JsonResponse({'error': 'Invalid request'}, status=400)
+
+
 # @login_required
 # def bulk_download(request):
 #     if request.method != 'POST':
@@ -617,6 +669,40 @@ def bulk_download(request):
     return response
 
 
+# @login_required
+# def file_preview(request, file_path):
+#     if not has_permission(request.user, os.path.dirname(file_path), 'read'):
+#         return JsonResponse({'error': 'Permission denied'}, status=403)
+#
+#     base_path = settings.FILE_STORAGE_ROOT
+#     full_path = os.path.join(base_path, file_path.lstrip('/'))
+#
+#     if os.path.exists(full_path) and os.path.isfile(full_path):
+#         # Log view activity
+#         log_activity(
+#             request.user,
+#             os.path.basename(file_path),
+#             file_path,
+#             'view',
+#             request.META.get('REMOTE_ADDR'),
+#             os.path.getsize(full_path),
+#         )
+#
+#         # For now, just return file info. You can extend this for actual previews
+#         file_info = {
+#             'name': os.path.basename(file_path),
+#             'path': file_path,
+#             'size': os.path.getsize(full_path),
+#             'formatted_size': format_file_size(os.path.getsize(full_path)),
+#             'modified': os.path.getmtime(full_path),
+#             'extension': os.path.splitext(file_path)[1].lower(),
+#         }
+#
+#         return JsonResponse({'file': file_info})
+#
+#     return JsonResponse({'error': 'File not found'}, status=404)
+
+
 @login_required
 def file_preview(request, file_path):
     if not has_permission(request.user, os.path.dirname(file_path), 'read'):
@@ -625,30 +711,70 @@ def file_preview(request, file_path):
     base_path = settings.FILE_STORAGE_ROOT
     full_path = os.path.join(base_path, file_path.lstrip('/'))
 
-    if os.path.exists(full_path) and os.path.isfile(full_path):
-        # Log view activity
-        log_activity(
-            request.user,
-            os.path.basename(file_path),
-            file_path,
-            'view',
-            request.META.get('REMOTE_ADDR'),
-            os.path.getsize(full_path),
-        )
+    if not os.path.exists(full_path) or not os.path.isfile(full_path):
+        return JsonResponse({'error': 'File not found'}, status=404)
 
-        # For now, just return file info. You can extend this for actual previews
-        file_info = {
-            'name': os.path.basename(file_path),
-            'path': file_path,
-            'size': os.path.getsize(full_path),
-            'formatted_size': format_file_size(os.path.getsize(full_path)),
-            'modified': os.path.getmtime(full_path),
-            'extension': os.path.splitext(file_path)[1].lower(),
-        }
+    log_activity(
+        request.user,
+        os.path.basename(file_path),
+        file_path,
+        'view',
+        request.META.get('REMOTE_ADDR'),
+        os.path.getsize(full_path),
+    )
 
-        return JsonResponse({'file': file_info})
+    ext = os.path.splitext(full_path)[1].lower()
+    if ext in ('.docx', '.doc'):
+        import pythoncom
+        pythoncom.CoInitialize()
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+                tmp_path = tmp.name
+            convert(full_path, tmp_path)
+        finally:
+            pythoncom.CoUninitialize()
+        with open(tmp_path, 'rb') as f:
+            pdf_bytes = f.read()
+        os.unlink(tmp_path)
+        stem = os.path.splitext(os.path.basename(file_path))[0]
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        response['Content-Disposition'] = f'inline; filename="{stem}.pdf"'
+        return response
 
-    return JsonResponse({'error': 'File not found'}, status=404)
+    if ext in ('.pptx', '.ppt'):
+        import pythoncom
+        import win32com.client
+        pythoncom.CoInitialize()
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+                tmp_path = tmp.name
+            ppt = win32com.client.Dispatch('PowerPoint.Application')
+            try:
+                deck = ppt.Presentations.Open(full_path, ReadOnly=True, Untitled=False, WithWindow=False)
+                deck.SaveAs(tmp_path, 32)  # 32 = ppSaveAsPDF
+                deck.Close()
+            finally:
+                ppt.Quit()
+        finally:
+            pythoncom.CoUninitialize()
+        with open(tmp_path, 'rb') as f:
+            pdf_bytes = f.read()
+        os.unlink(tmp_path)
+        stem = os.path.splitext(os.path.basename(file_path))[0]
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        response['Content-Disposition'] = f'inline; filename="{stem}.pdf"'
+        return response
+
+    content_type, _ = mimetypes.guess_type(full_path)
+    if ext in ('.csv', '.tsv', '.log', '.md'):
+        content_type = 'text/plain; charset=utf-8'
+    elif not content_type:
+        content_type = 'application/octet-stream'
+
+    wrapper = FileWrapper(open(full_path, 'rb'))
+    response = HttpResponse(wrapper, content_type=content_type)
+    response['Content-Disposition'] = f'inline; filename="{os.path.basename(file_path)}"'
+    return response
 
 
 # Add these imports at the top

@@ -35,6 +35,7 @@ class FileActivity(models.Model):
         ('download', 'File Download'),
         ('delete', 'File Delete'),
         ('view', 'File View'),
+        ('rename', 'File Rename'),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)

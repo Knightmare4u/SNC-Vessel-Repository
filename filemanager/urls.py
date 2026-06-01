@@ -23,6 +23,7 @@ urlpatterns = [
         views.get_upload_progress,
         name='upload_progress',
     ),
+    path('rename/', views.rename_file, name='rename_file'),
     path('delete/', views.delete_file, name='delete_file'),
     path('search/', views.search_files, name='search_files'),
     path('create-folder/', views.create_folder, name='create_folder'),
