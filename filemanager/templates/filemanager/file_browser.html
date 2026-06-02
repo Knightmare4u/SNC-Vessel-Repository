@@ -246,7 +246,7 @@ tr[data-type="file"] { cursor: pointer; }
                                 </a>
                             {% endif %}
 
-                            {% if can_rename %}
+                            {% if can_rename and item.type != 'folder' %}
                                 <button class="btn btn-secondary btn-sm rename-btn"
                                         data-filepath="{{ item.path }}"
                                         data-filename="{{ item.name }}"
@@ -329,7 +329,7 @@ tr[data-type="file"] { cursor: pointer; }
 
 <!-- Cannot Preview Modal -->
 <div id="noPreviewModal" style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5);">
-    <div style="background-color: var(--white); margin: 12% auto; padding: 2rem; border-radius: 10px; width: 90%; max-width: 420px; position: relative;">
+    <div style="background-color: var(--white); margin: 12% auto; padding: 2rem; border-radius: 10px; width: 90%; max-width: 420px; position: relative; text-align: center;">
         <span onclick="document.getElementById('noPreviewModal').style.display='none'"
               style="position: absolute; right: 1rem; top: 1rem; font-size: 1.5rem; cursor: pointer; color: var(--gray);">&times;</span>
         <div style="font-size: 2.5rem; margin-bottom: 1rem;">🚫</div>
@@ -521,7 +521,8 @@ async function submitRename() {
 
 function updateRowAfterRename(oldFilePath, newFilePath, newName, modified) {
     const row = document.querySelector(`.rename-btn[data-filepath="${oldFilePath}"]`).closest('tr');
-    row.querySelector('span[style*="font-weight: 500"]').textContent = newName;
+    const nameEl = row.querySelector('a[style*="font-weight: 500"], span[style*="font-weight: 500"]');
+    if (nameEl) nameEl.textContent = newName;
     row.dataset.name = newName.toLowerCase();
     if (modified) row.querySelectorAll('td')[3].textContent = modified;
     row.querySelectorAll('[data-filepath]').forEach(el => el.dataset.filepath = newFilePath);
@@ -843,6 +844,11 @@ function displaySearchResults(results, query) {
                                     data-filepath="${item.path}"
                                     title="Download">
                                 ⬇️
+                            </button>
+                            <button class="btn btn-sm copy-link-btn"
+                                    data-filepath="${item.path}"
+                                    title="Copy Download Link">
+                                🔗
                             </button>
                             ${document.querySelector('.delete-btn') ? `
                             <button class="btn btn-danger btn-sm delete-btn"
