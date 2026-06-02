@@ -1,3 +1,4 @@
+import io
 import json
 import mimetypes
 import os
@@ -5,13 +6,16 @@ import shutil
 import tempfile
 import urllib.parse
 import uuid
+import zipfile
 from datetime import datetime
 from wsgiref.util import FileWrapper
 
-from docx2pdf import convert
-
+import mammoth
+import pythoncom
+import win32com.client
 from django.conf import settings
 from django.contrib import messages
+from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth import REDIRECT_FIELD_NAME, authenticate
 from django.contrib.auth import login
 from django.contrib.auth import login as auth_login
@@ -24,6 +28,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.text import get_valid_filename
 from django.views.decorators.csrf import csrf_exempt
+from docx2pdf import convert
 
 from .models import FileActivity, FolderPermission, UploadSession, UserProfile
 from .utils import (
@@ -564,16 +569,25 @@ def rename_file(request):
             return JsonResponse({'error': 'File not found'}, status=404)
 
         if full_old != full_new and os.path.exists(full_new):
-            return JsonResponse({'error': 'A file with that name already exists'}, status=400)
+            return JsonResponse(
+                {'error': 'A file with that name already exists'}, status=400
+            )
 
         if full_old == full_new:
-            return JsonResponse({'success': True, 'new_path': os.path.join(folder, new_name).replace('\\', '/')})
+            return JsonResponse(
+                {
+                    'success': True,
+                    'new_path': os.path.join(folder, new_name).replace('\\', '/'),
+                }
+            )
 
         try:
             os.rename(full_old, full_new)
             os.utime(full_new, None)
             modified_ts = os.path.getmtime(full_new)
-            modified_str = datetime.fromtimestamp(modified_ts).strftime('%b %d, %Y %H:%M')
+            modified_str = datetime.fromtimestamp(modified_ts).strftime(
+                '%b %d, %Y %H:%M'
+            )
             new_path = os.path.join(folder, new_name).replace('\\', '/')
             log_activity(
                 request.user,
@@ -582,48 +596,13 @@ def rename_file(request):
                 'rename',
                 request.META.get('REMOTE_ADDR'),
             )
-            return JsonResponse({'success': True, 'new_path': new_path, 'modified': modified_str})
+            return JsonResponse(
+                {'success': True, 'new_path': new_path, 'modified': modified_str}
+            )
         except Exception as e:
             return JsonResponse({'error': str(e)}, status=500)
 
     return JsonResponse({'error': 'Invalid request'}, status=400)
-
-
-# @login_required
-# def bulk_download(request):
-#     if request.method != 'POST':
-#         return JsonResponse({'error': 'Invalid request'}, status=400)
-#
-#     file_paths = request.POST.getlist('paths')
-#
-#     if not file_paths:
-#         return JsonResponse({'error': 'No files selected'}, status=400)
-#
-#     base_path = settings.FILE_STORAGE_ROOT
-#     buffer = io.BytesIO()
-#
-#     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as zf:
-#         for file_path in file_paths:
-#             if not has_permission(request.user, os.path.dirname(file_path), 'read'):
-#                 continue
-#             full_path = os.path.join(base_path, file_path.lstrip('/'))
-#             if not os.path.abspath(full_path).startswith(os.path.abspath(base_path)):
-#                 continue
-#             if os.path.exists(full_path) and os.path.isfile(full_path):
-#                 zf.write(full_path, os.path.basename(full_path))
-#                 log_activity(
-#                     request.user,
-#                     os.path.basename(file_path),
-#                     file_path,
-#                     'download',
-#                     request.META.get('REMOTE_ADDR'),
-#                     os.path.getsize(full_path),
-#                 )
-#
-#     buffer.seek(0)
-#     response = HttpResponse(buffer.read(), content_type='application/zip')
-#     response['Content-Disposition'] = 'attachment; filename="download.zip"'
-#     return response
 
 
 @login_required
@@ -632,41 +611,78 @@ def bulk_download(request):
         return JsonResponse({'error': 'Invalid request'}, status=400)
 
     file_paths = request.POST.getlist('paths')
+
     if not file_paths:
         return JsonResponse({'error': 'No files selected'}, status=400)
 
     base_path = settings.FILE_STORAGE_ROOT
-    valid_files = []
-    for file_path in file_paths:
-        if not has_permission(request.user, os.path.dirname(file_path), 'read'):
-            continue
-        full_path = os.path.join(base_path, file_path.lstrip('/'))
-        if not os.path.abspath(full_path).startswith(os.path.abspath(base_path)):
-            continue
-        if os.path.exists(full_path) and os.path.isfile(full_path):
-            valid_files.append((file_path, full_path))
+    buffer = io.BytesIO()
 
-    if not valid_files:
-        return JsonResponse({'error': 'No accessible files'}, status=404)
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as zf:
+        for file_path in file_paths:
+            if not has_permission(request.user, os.path.dirname(file_path), 'read'):
+                continue
+            full_path = os.path.join(base_path, file_path.lstrip('/'))
+            if not os.path.abspath(full_path).startswith(os.path.abspath(base_path)):
+                continue
+            if os.path.exists(full_path) and os.path.isfile(full_path):
+                zf.write(full_path, os.path.basename(full_path))
+                log_activity(
+                    request.user,
+                    os.path.basename(file_path),
+                    file_path,
+                    'download',
+                    request.META.get('REMOTE_ADDR'),
+                    os.path.getsize(full_path),
+                )
 
-    for file_path, full_path in valid_files:
-        log_activity(
-            request.user,
-            os.path.basename(file_path),
-            file_path,
-            'download',
-            request.META.get('REMOTE_ADDR'),
-            os.path.getsize(full_path),
-        )
-
-    files_to_zip = [
-        (os.path.basename(file_path), full_path) for file_path, full_path in valid_files
-    ]
-    response = StreamingHttpResponse(
-        ZipStream(files_to_zip), content_type='application/zip'
-    )
+    buffer.seek(0)
+    response = HttpResponse(buffer.read(), content_type='application/zip')
     response['Content-Disposition'] = 'attachment; filename="download.zip"'
     return response
+
+
+# @login_required
+# def bulk_download(request):
+#     if request.method != 'POST':
+#         return JsonResponse({'error': 'Invalid request'}, status=400)
+
+#     file_paths = request.POST.getlist('paths')
+#     if not file_paths:
+#         return JsonResponse({'error': 'No files selected'}, status=400)
+
+#     base_path = settings.FILE_STORAGE_ROOT
+#     valid_files = []
+#     for file_path in file_paths:
+#         if not has_permission(request.user, os.path.dirname(file_path), 'read'):
+#             continue
+#         full_path = os.path.join(base_path, file_path.lstrip('/'))
+#         if not os.path.abspath(full_path).startswith(os.path.abspath(base_path)):
+#             continue
+#         if os.path.exists(full_path) and os.path.isfile(full_path):
+#             valid_files.append((file_path, full_path))
+
+#     if not valid_files:
+#         return JsonResponse({'error': 'No accessible files'}, status=404)
+
+#     for file_path, full_path in valid_files:
+#         log_activity(
+#             request.user,
+#             os.path.basename(file_path),
+#             file_path,
+#             'download',
+#             request.META.get('REMOTE_ADDR'),
+#             os.path.getsize(full_path),
+#         )
+
+#     files_to_zip = [
+#         (os.path.basename(file_path), full_path) for file_path, full_path in valid_files
+#     ]
+#     response = StreamingHttpResponse(
+#         ZipStream(files_to_zip), content_type='application/zip'
+#     )
+#     response['Content-Disposition'] = 'attachment; filename="download.zip"'
+#     return response
 
 
 # @login_required
@@ -725,45 +741,70 @@ def file_preview(request, file_path):
 
     ext = os.path.splitext(full_path)[1].lower()
     if ext in ('.docx', '.doc'):
-        import pythoncom
-        pythoncom.CoInitialize()
-        try:
-            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
-                tmp_path = tmp.name
-            convert(full_path, tmp_path)
-        finally:
-            pythoncom.CoUninitialize()
-        with open(tmp_path, 'rb') as f:
-            pdf_bytes = f.read()
-        os.unlink(tmp_path)
-        stem = os.path.splitext(os.path.basename(file_path))[0]
-        response = HttpResponse(pdf_bytes, content_type='application/pdf')
-        response['Content-Disposition'] = f'inline; filename="{stem}.pdf"'
-        return response
+        # tmp_path = None
+        # pythoncom.CoInitialize()
+        # try:
+        #     with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+        #         tmp_path = tmp.name
+        #     convert(full_path, tmp_path)
+        # except Exception:
+        #     if tmp_path and os.path.exists(tmp_path):
+        #         os.unlink(tmp_path)
+        #     return JsonResponse(
+        #         {'error': 'Word preview unavailable: Microsoft Word is not installed on this server.'},
+        #         status=503,
+        #     )
+        # finally:
+        #     pythoncom.CoUninitialize()
+        # with open(tmp_path, 'rb') as f:
+        #     pdf_bytes = f.read()
+        # os.unlink(tmp_path)
+        # stem = os.path.splitext(os.path.basename(file_path))[0]
+        # response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        # response['Content-Disposition'] = f'inline; filename="{stem}.pdf"'
+        # return response
+        with open(full_path, 'rb') as f:
+            result = mammoth.convert_to_html(f)
+        html = (
+            '<!DOCTYPE html><html><head><meta charset="utf-8">'
+            '<style>body{font-family:sans-serif;max-width:900px;margin:40px auto;padding:0 20px}</style>'
+            f'</head><body>{result.value}</body></html>'
+        )
+        return HttpResponse(html, content_type='text/html; charset=utf-8')
 
-    if ext in ('.pptx', '.ppt'):
-        import pythoncom
-        import win32com.client
-        pythoncom.CoInitialize()
-        try:
-            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
-                tmp_path = tmp.name
-            ppt = win32com.client.Dispatch('PowerPoint.Application')
-            try:
-                deck = ppt.Presentations.Open(full_path, ReadOnly=True, Untitled=False, WithWindow=False)
-                deck.SaveAs(tmp_path, 32)  # 32 = ppSaveAsPDF
-                deck.Close()
-            finally:
-                ppt.Quit()
-        finally:
-            pythoncom.CoUninitialize()
-        with open(tmp_path, 'rb') as f:
-            pdf_bytes = f.read()
-        os.unlink(tmp_path)
-        stem = os.path.splitext(os.path.basename(file_path))[0]
-        response = HttpResponse(pdf_bytes, content_type='application/pdf')
-        response['Content-Disposition'] = f'inline; filename="{stem}.pdf"'
-        return response
+    # if ext in ('.pptx', '.ppt'):
+    #     tmp_path = None
+    #     pythoncom.CoInitialize()
+    #     try:
+    #         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+    #             tmp_path = tmp.name
+    #         ppt = win32com.client.Dispatch('PowerPoint.Application')
+    #         try:
+    #             deck = ppt.Presentations.Open(
+    #                 full_path, ReadOnly=True, Untitled=False, WithWindow=False
+    #             )
+    #             deck.SaveAs(tmp_path, 32)  # 32 = ppSaveAsPDF
+    #             deck.Close()
+    #         finally:
+    #             ppt.Quit()
+    #     except Exception:
+    #         if tmp_path and os.path.exists(tmp_path):
+    #             os.unlink(tmp_path)
+    #         return JsonResponse(
+    #             {
+    #                 'error': 'PowerPoint preview unavailable: Microsoft PowerPoint is not installed on this server.'
+    #             },
+    #             status=503,
+    #         )
+    #     finally:
+    #         pythoncom.CoUninitialize()
+    #     with open(tmp_path, 'rb') as f:
+    #         pdf_bytes = f.read()
+    #     os.unlink(tmp_path)
+    #     stem = os.path.splitext(os.path.basename(file_path))[0]
+    #     response = HttpResponse(pdf_bytes, content_type='application/pdf')
+    #     response['Content-Disposition'] = f'inline; filename="{stem}.pdf"'
+    #     return response
 
     content_type, _ = mimetypes.guess_type(full_path)
     if ext in ('.csv', '.tsv', '.log', '.md'):
@@ -773,15 +814,10 @@ def file_preview(request, file_path):
 
     wrapper = FileWrapper(open(full_path, 'rb'))
     response = HttpResponse(wrapper, content_type=content_type)
-    response['Content-Disposition'] = f'inline; filename="{os.path.basename(file_path)}"'
+    response['Content-Disposition'] = (
+        f'inline; filename="{os.path.basename(file_path)}"'
+    )
     return response
-
-
-# Add these imports at the top
-import json
-
-from django.contrib.admin.views.decorators import staff_member_required
-from django.http import JsonResponse
 
 
 @staff_member_required
