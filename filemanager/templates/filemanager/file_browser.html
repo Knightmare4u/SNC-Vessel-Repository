@@ -816,7 +816,12 @@ function displaySearchResults(results, query) {
                                 ${item.icon}
                             </div>
                             <div>
-                                <span style="font-weight: 500;">${item.name}</span>
+                                <span style="font-weight: 500; cursor: pointer;"
+                                      onmouseover="this.style.textDecoration='underline'"
+                                      onmouseout="this.style.textDecoration='none'"
+                                      onclick="handlePreview('${item.path}', '${item.name}', '')">
+                                    ${item.name}
+                                </span>
                                 <div style="font-size: 0.875rem; color: var(--gray);">
                                     In: ${item.folder || 'Root'}
                                 </div>
