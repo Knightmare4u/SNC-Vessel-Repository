@@ -604,11 +604,23 @@ function showToast(message) {
 
 function copyDownloadLink(btn, filePath) {
     const url = `${window.location.origin}/download/${filePath}`;
-    navigator.clipboard.writeText(url).then(() => {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(() => {
+            showToast('🔗 Link copied to clipboard!');
+        });
+    } else {
+        // Fallback for non-secure contexts (HTTP)
+        const ta = document.createElement('textarea');
+        ta.value = url;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
         showToast('🔗 Link copied to clipboard!');
-    });
+    }
 }
-
 
 function formatBytes(bytes) {
     if (bytes === 0) return '0 Bytes';
