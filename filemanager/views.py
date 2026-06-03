@@ -11,6 +11,7 @@ from datetime import datetime
 from wsgiref.util import FileWrapper
 
 import mammoth
+import openpyxl
 import pythoncom
 import win32com.client
 from django.conf import settings
@@ -805,6 +806,40 @@ def file_preview(request, file_path):
     #     response = HttpResponse(pdf_bytes, content_type='application/pdf')
     #     response['Content-Disposition'] = f'inline; filename="{stem}.pdf"'
     #     return response
+
+    if ext in ('.xlsx', '.xls'):
+        wb = openpyxl.load_workbook(full_path, read_only=True, data_only=True)
+        sheets_html = []
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            rows_html = []
+            for i, row in enumerate(ws.iter_rows(values_only=True)):
+                if all(cell is None for cell in row):
+                    continue
+                tag = 'th' if i == 0 else 'td'
+                cells = ''.join(
+                    f'<{tag}>{cell if cell is not None else ""}</{tag}>' for cell in row
+                )
+                rows_html.append(f'<tr>{cells}</tr>')
+            sheets_html.append(
+                f'<h3>{sheet_name}</h3>'
+                f'<div class="table-wrap"><table>{"".join(rows_html)}</table></div>'
+            )
+        wb.close()
+        html = (
+            '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
+            'body{font-family:sans-serif;padding:20px 40px}'
+            'h3{margin:24px 0 8px}'
+            '.table-wrap{overflow-x:auto}'
+            'table{border-collapse:collapse;min-width:100%}'
+            'th,td{border:1px solid #d1d5db;padding:6px 12px;white-space:nowrap}'
+            'th{background:#f3f4f6;font-weight:600}'
+            'tr:nth-child(even) td{background:#f9fafb}'
+            '</style></head><body>'
+            f'{"".join(sheets_html)}'
+            '</body></html>'
+        )
+        return HttpResponse(html, content_type='text/html; charset=utf-8')
 
     content_type, _ = mimetypes.guess_type(full_path)
     if ext in ('.csv', '.tsv', '.log', '.md'):
