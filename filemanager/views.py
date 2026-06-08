@@ -157,7 +157,7 @@ def file_browser(request, folder_path=''):
                         'name': item,
                         'type': 'folder',
                         'path': rel_path,
-                        'size': '-',
+                        'size': 'size': f"{len(os.listdir(item_path))} items",
                         'size_bytes': 0,
                         'modified': datetime.fromtimestamp(os.path.getmtime(item_path)),
                         'created_at': datetime.fromtimestamp(
