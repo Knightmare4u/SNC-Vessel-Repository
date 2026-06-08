@@ -177,11 +177,9 @@ tr[data-type="file"] { cursor: pointer; }
                     data-created="{{ item.created_at|date:'U' }}"
                     data-type="{{ item.type }}">
                     <td style="padding: 1rem; text-align: center;">
-                        {% if item.type == 'file' %}
                         <input type="checkbox" class="file-checkbox custom-checkbox"
                                data-filepath="{{ item.path }}"
                                data-filename="{{ item.name }}">
-                        {% endif %}
                     </td>
                     <td style="padding: 1rem;">
                         <div style="display: flex; align-items: center; gap: 0.75rem;">
@@ -967,7 +965,7 @@ function updateBulkBar() {
 
     if (checked.length > 0) {
         bar.style.display = 'flex';
-        countEl.textContent = `${checked.length} file${checked.length > 1 ? 's' : ''} selected`;
+        countEl.textContent = `${checked.length} selected`;
     } else {
         bar.style.display = 'none';
     }
@@ -1042,7 +1040,7 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     document.querySelector('tbody').addEventListener('click', function(e) {
-        const row = e.target.closest('tr[data-type="file"]');
+        const row = e.target.closest('tr[data-type="file"], tr[data-type="folder"]');
         if (!row) return;
         if (e.target.closest('a, button, input')) return;
         const cb = row.querySelector('.file-checkbox');

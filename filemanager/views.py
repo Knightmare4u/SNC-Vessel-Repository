@@ -621,12 +621,12 @@ def bulk_download(request):
 
     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as zf:
         for file_path in file_paths:
-            if not has_permission(request.user, os.path.dirname(file_path), 'read'):
+            if not has_permission(request.user, os.path.dirname(file_path.rstrip('/\\')), 'read'):
                 continue
             full_path = os.path.join(base_path, file_path.lstrip('/'))
             if not os.path.abspath(full_path).startswith(os.path.abspath(base_path)):
                 continue
-            if os.path.exists(full_path) and os.path.isfile(full_path):
+            if os.path.isfile(full_path):
                 zf.write(full_path, os.path.basename(full_path))
                 log_activity(
                     request.user,
@@ -636,6 +636,21 @@ def bulk_download(request):
                     request.META.get('REMOTE_ADDR'),
                     os.path.getsize(full_path),
                 )
+            elif os.path.isdir(full_path):
+                parent_path = os.path.dirname(full_path.rstrip('/\\'))
+                for root, _, files in os.walk(full_path):
+                    for filename in files:
+                        file_full = os.path.join(root, filename)
+                        arcname = os.path.relpath(file_full, parent_path)
+                        zf.write(file_full, arcname)
+                        log_activity(
+                            request.user,
+                            filename,
+                            os.path.relpath(file_full, base_path),
+                            'download',
+                            request.META.get('REMOTE_ADDR'),
+                            os.path.getsize(file_full),
+                        )
 
     buffer.seek(0)
     response = HttpResponse(buffer.read(), content_type='application/zip')
