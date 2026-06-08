@@ -198,9 +198,12 @@ tr[data-type="file"] { cursor: pointer; }
                                     </a>
                                 {% else %}
                                     <span style="font-weight: 500; cursor: pointer; text-decoration: none;"
+                                          data-filepath="{{ item.path }}"
+                                          data-filename="{{ item.name }}"
+                                          data-extension="{{ item.extension }}"
                                           onmouseover="this.style.textDecoration='underline'"
                                           onmouseout="this.style.textDecoration='none'"
-                                          onclick="event.stopPropagation(); handlePreview('{{ item.path }}', '{{ item.name }}', '{{ item.extension }}')">
+                                          onclick="event.stopPropagation(); handlePreview(this.dataset.filepath, this.dataset.filename, this.dataset.extension)">
                                         {{ item.name }}
                                     </span>
                                 {% endif %}
