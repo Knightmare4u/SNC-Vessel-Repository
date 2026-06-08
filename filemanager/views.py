@@ -157,7 +157,7 @@ def file_browser(request, folder_path=''):
                         'name': item,
                         'type': 'folder',
                         'path': rel_path,
-                        'size': 'size': f"{len(os.listdir(item_path))} items",
+                        'size': f'{len(os.listdir(item_path))} items',
                         'size_bytes': 0,
                         'modified': datetime.fromtimestamp(os.path.getmtime(item_path)),
                         'created_at': datetime.fromtimestamp(
@@ -621,7 +621,9 @@ def bulk_download(request):
 
     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as zf:
         for file_path in file_paths:
-            if not has_permission(request.user, os.path.dirname(file_path.rstrip('/\\')), 'read'):
+            if not has_permission(
+                request.user, os.path.dirname(file_path.rstrip('/\\')), 'read'
+            ):
                 continue
             full_path = os.path.join(base_path, file_path.lstrip('/'))
             if not os.path.abspath(full_path).startswith(os.path.abspath(base_path)):
