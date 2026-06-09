@@ -40,7 +40,6 @@
     width: 10px; height: 2px;
     background: #fff; border-radius: 1px;
 }
-tr[data-type="file"] { cursor: pointer; }
 .copy-link-btn {
     background: #f97316 !important;
     color: #fff !important;
@@ -69,6 +68,8 @@ tr[data-type="file"] { cursor: pointer; }
     z-index: 9999;
 }
 #copy-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+thead.search-mode th[onclick] { cursor: default !important; pointer-events: none; }
+thead.search-mode [id^="sort-indicator"] { display: none; }
 </style>
 {% endblock %}
 
@@ -247,10 +248,11 @@ tr[data-type="file"] { cursor: pointer; }
                                 </a>
                             {% endif %}
 
-                            {% if can_rename and item.type != 'folder' %}
+                            {% if can_rename %}
                                 <button class="btn btn-secondary btn-sm rename-btn"
                                         data-filepath="{{ item.path }}"
                                         data-filename="{{ item.name }}"
+                                        data-type="{{ item.type }}"
                                         title="Rename">
                                     ✏️
                                 </button>
@@ -269,7 +271,7 @@ tr[data-type="file"] { cursor: pointer; }
                 </tr>
                 {% empty %}
                 <tr>
-                    <td colspan="5" style="padding: 3rem; text-align: center; color: var(--gray);">
+                    <td colspan="6" style="padding: 3rem; text-align: center; color: var(--gray);">
                         <div style="font-size: 3rem; margin-bottom: 1rem;">📁</div>
                         <h3>This folder is empty</h3>
                         <p>{% if can_upload %}Upload some files to get started!{% else %}No files available.{% endif %}</p>
@@ -358,6 +360,8 @@ tr[data-type="file"] { cursor: pointer; }
 
 {% block extra_js %}
 <script>
+const canDelete = {% if can_delete %}true{% else %}false{% endif %};
+
 // Fixed CSRF token function
 function getCSRFToken() {
     const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]');
@@ -416,7 +420,8 @@ document.addEventListener('DOMContentLoaded', function() {
         } else if (e.target.classList.contains('rename-btn')) {
             const filePath = e.target.dataset.filepath;
             const fileName = e.target.dataset.filename;
-            openRenameModal(filePath, fileName);
+            const fileType = e.target.dataset.type;
+            openRenameModal(filePath, fileName, fileType);
         } else if (e.target.classList.contains('delete-btn')) {
             const filePath = e.target.dataset.filepath;
             const fileName = e.target.dataset.filename;
@@ -462,8 +467,9 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-function openRenameModal(filePath, fileName) {
-    const dotIndex = fileName.lastIndexOf('.');
+function openRenameModal(filePath, fileName, fileType) {
+    const isFolder = fileType === 'folder';
+    const dotIndex = isFolder ? -1 : fileName.lastIndexOf('.');
     const baseName = dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName;
     const ext = dotIndex > 0 ? fileName.slice(dotIndex) : '';
     document.getElementById('renameInput').value = baseName;
@@ -523,7 +529,15 @@ async function submitRename() {
 function updateRowAfterRename(oldFilePath, newFilePath, newName, modified) {
     const row = document.querySelector(`.rename-btn[data-filepath="${oldFilePath}"]`).closest('tr');
     const nameEl = row.querySelector('a[style*="font-weight: 500"], span[style*="font-weight: 500"]');
-    if (nameEl) nameEl.textContent = newName;
+    if (nameEl) {
+        nameEl.textContent = newName;
+        if (nameEl.tagName === 'A') {
+            const newUrl = `/browser/${newFilePath}/`;
+            nameEl.href = newUrl;
+            const openBtn = row.querySelector('a[title="Open Folder"]');
+            if (openBtn) openBtn.href = newUrl;
+        }
+    }
     row.dataset.name = newName.toLowerCase();
     if (modified) row.querySelectorAll('td')[3].textContent = modified;
     row.querySelectorAll('[data-filepath]').forEach(el => el.dataset.filepath = newFilePath);
@@ -729,14 +743,6 @@ window.addEventListener('click', (e) => {
     }
 });
 
-// Show upload zone when page loads if user can upload
-document.addEventListener('DOMContentLoaded', function() {
-    const uploadZone = document.getElementById('uploadZone');
-    if (uploadZone) {
-        uploadZone.style.display = 'block';
-    }
-});
-
 // Search functionality
 document.addEventListener('DOMContentLoaded', function() {
     const searchInput = document.getElementById('searchInput');
@@ -786,18 +792,22 @@ function displaySearchResults(results, query) {
     const uploadZone = document.getElementById('uploadZone');
     const uploadProgress = document.getElementById('uploadProgress');
 
+    const thead = document.querySelector('thead');
+    thead?.classList.add('search-mode');
+
     // Hide upload sections during search
     if (uploadZone) uploadZone.style.display = 'none';
     if (uploadProgress) uploadProgress.style.display = 'none';
 
     if (results.length === 0) {
+        if (thead) thead.style.display = 'none';
         tableBody.innerHTML = `
             <tr>
                 <td colspan="6" style="padding: 3rem; text-align: center; color: var(--gray);">
                     <div style="font-size: 3rem; margin-bottom: 1rem;">🔍</div>
                     <h3>No files found</h3>
                     <p>No results found for "${query}"</p>
-                    <button class="btn btn-secondary btn-sm" onclick="clearSearch()">
+                    <button class="btn btn-secondary btn-sm" style="margin-top: 1rem;" onclick="clearSearch()">
                         Clear Search
                     </button>
                 </td>
@@ -812,17 +822,24 @@ function displaySearchResults(results, query) {
                 <tr style="border-bottom: 1px solid #e5e7eb; transition: background-color 0.2s;"
                     onmouseover="this.style.backgroundColor='var(--light-gray)'"
                     onmouseout="this.style.backgroundColor='var(--white)'">
-                    <td style="padding: 1rem; text-align: center;"></td>
+                    <td style="padding: 1rem; text-align: center;">
+                        <input type="checkbox" class="file-checkbox custom-checkbox"
+                               data-filepath="${item.path}"
+                               data-filename="${item.name}">
+                    </td>
                     <td style="padding: 1rem;">
                         <div style="display: flex; align-items: center; gap: 0.75rem;">
                             <div style="font-size: 1.5rem;">
                                 ${item.icon}
                             </div>
                             <div>
-                                <span style="font-weight: 500; cursor: pointer;"
+                                <span style="font-weight: 500; cursor: pointer; text-decoration: none;"
+                                      data-filepath="${item.path}"
+                                      data-filename="${item.name}"
+                                      data-extension="${item.extension}"
                                       onmouseover="this.style.textDecoration='underline'"
                                       onmouseout="this.style.textDecoration='none'"
-                                      onclick="handlePreview('${item.path}', '${item.name}', '')">
+                                      onclick="event.stopPropagation(); handlePreview(this.dataset.filepath, this.dataset.filename, this.dataset.extension)">
                                     ${item.name}
                                 </span>
                                 <div style="font-size: 0.875rem; color: var(--gray);">
@@ -852,7 +869,7 @@ function displaySearchResults(results, query) {
                                     title="Copy Download Link">
                                 🔗
                             </button>
-                            ${document.querySelector('.delete-btn') ? `
+                            ${canDelete ? `
                             <button class="btn btn-danger btn-sm delete-btn"
                                     data-filepath="${item.path}"
                                     data-filename="${item.name}"
@@ -902,9 +919,7 @@ function displaySearchResults(results, query) {
 
 function clearSearch() {
     const searchInput = document.getElementById('searchInput');
-    if (searchInput) {
-        searchInput.value = '';
-    }
+    if (searchInput) searchInput.value = '';
     location.reload();
 }
 

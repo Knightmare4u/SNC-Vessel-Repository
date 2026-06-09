@@ -23,6 +23,7 @@ from django.contrib.auth import login as auth_login
 from django.contrib.auth import update_session_auth_hash
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import PasswordChangeForm
+from django.db import transaction
 from django.db.models import Q
 from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -549,61 +550,88 @@ def create_folder(request):
 
 @login_required
 def rename_file(request):
-    if request.method == 'POST':
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Invalid request'}, status=400)
+
+    try:
         data = json.loads(request.body)
-        old_path = data.get('old_path', '')
-        new_name = data.get('new_name', '').strip()
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON'}, status=400)
 
-        if not new_name:
-            return JsonResponse({'error': 'New name is required'}, status=400)
+    old_path = data.get('old_path', '')
+    new_name = data.get('new_name', '').strip()
 
-        folder = os.path.dirname(old_path)
-        if not has_permission(request.user, folder, 'write'):
-            return JsonResponse({'error': 'Permission denied'}, status=403)
+    if not old_path:
+        return JsonResponse({'error': 'Old path is required'}, status=400)
 
-        new_name = get_valid_filename(new_name)
-        base_path = settings.FILE_STORAGE_ROOT
-        full_old = os.path.join(base_path, old_path.lstrip('/'))
-        full_new = os.path.join(base_path, folder.lstrip('/'), new_name)
+    if not new_name:
+        return JsonResponse({'error': 'New name is required'}, status=400)
 
-        if not os.path.exists(full_old):
-            return JsonResponse({'error': 'File not found'}, status=404)
+    folder = os.path.dirname(old_path)
 
-        if full_old != full_new and os.path.exists(full_new):
-            return JsonResponse(
-                {'error': 'A file with that name already exists'}, status=400
-            )
+    if not has_permission(request.user, folder, 'write'):
+        return JsonResponse({'error': 'Permission denied'}, status=403)
 
-        if full_old == full_new:
-            return JsonResponse(
-                {
-                    'success': True,
-                    'new_path': os.path.join(folder, new_name).replace('\\', '/'),
-                }
-            )
+    new_name = get_valid_filename(new_name)
+    new_path = os.path.join(folder, new_name).replace('\\', '/')
 
-        try:
-            os.rename(full_old, full_new)
-            os.utime(full_new, None)
-            modified_ts = os.path.getmtime(full_new)
-            modified_str = datetime.fromtimestamp(modified_ts).strftime(
-                '%b %d, %Y %H:%M'
-            )
-            new_path = os.path.join(folder, new_name).replace('\\', '/')
-            log_activity(
-                request.user,
-                f"{os.path.basename(old_path)} → {new_name}",
-                new_path,
-                'rename',
-                request.META.get('REMOTE_ADDR'),
-            )
-            return JsonResponse(
-                {'success': True, 'new_path': new_path, 'modified': modified_str}
-            )
-        except Exception as e:
-            return JsonResponse({'error': str(e)}, status=500)
+    base_path = settings.FILE_STORAGE_ROOT
+    full_old_path = os.path.join(base_path, old_path.lstrip('/'))
+    full_new_path = os.path.join(base_path, new_path.lstrip('/'))
 
-    return JsonResponse({'error': 'Invalid request'}, status=400)
+    if not os.path.exists(full_old_path):
+        return JsonResponse({'error': 'File/Folder not found'}, status=404)
+
+    if full_old_path == full_new_path:
+        return JsonResponse({'success': True, 'new_path': new_path})
+
+    if os.path.exists(full_new_path):
+        return JsonResponse(
+            {'error': 'A file/folder with that name already exists'}, status=400
+        )
+
+    try:
+        with transaction.atomic():
+            if os.path.isdir(full_old_path):
+                old_folder_path = '/' + old_path.lstrip('/')
+                new_folder_path = '/' + new_path.lstrip('/')
+
+                permissions = FolderPermission.objects.select_for_update().filter(
+                    folder_path__startswith=old_folder_path
+                )
+
+                perms_to_update = []
+
+                for perm in permissions:
+                    perm.folder_path = (
+                        new_folder_path + perm.folder_path[len(old_folder_path) :]
+                    )
+                    perms_to_update.append(perm)
+
+                if perms_to_update:
+                    FolderPermission.objects.bulk_update(
+                        perms_to_update, ['folder_path']
+                    )
+
+            os.rename(full_old_path, full_new_path)
+
+        os.utime(full_new_path)
+        modified_str = datetime.fromtimestamp(os.path.getmtime(full_new_path)).strftime(
+            '%b %d, %Y %H:%M'
+        )
+        log_activity(
+            request.user,
+            f'{os.path.basename(old_path)} → {new_name}',
+            new_path,
+            'rename',
+            request.META.get('REMOTE_ADDR'),
+        )
+        return JsonResponse(
+            {'success': True, 'new_path': new_path, 'modified': modified_str}
+        )
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
 
 
 @login_required
