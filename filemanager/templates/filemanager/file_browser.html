@@ -120,13 +120,13 @@
                 </button>
             </div>
 
-            {% if can_create_folder %}
+            {% if can_create_folder and not in_archive %}
             <button class="btn btn-secondary btn-sm" id="createFolderBtn">
                 📁 New Folder
             </button>
             {% endif %}
 
-            {% if can_upload %}
+            {% if can_upload and not in_archive %}
             <button class="btn btn-primary btn-sm" onclick="document.getElementById('fileInput').click()">
                 📤 Upload Files
             </button>
@@ -135,7 +135,7 @@
     </div>
 
     <!-- Upload Zone -->
-    {% if can_upload %}
+    {% if can_upload and not in_archive %}
     <div class="upload-zone" id="uploadZone" style="border: 2px dashed var(--secondary-blue); border-radius: 10px; padding: 2rem; text-align: center; background: var(--light-blue); margin-bottom: 2rem; display: none;">
         <div style="font-size: 3rem; margin-bottom: 1rem;">📤</div>
         <h3>Drag & Drop Files to Upload</h3>
@@ -267,7 +267,7 @@
                                 </a>
                             {% endif %}
 
-                            {% if can_rename %}
+                            {% if can_rename and not item.is_archive and not in_archive %}
                                 <button class="btn btn-secondary btn-sm rename-btn"
                                         data-filepath="{{ item.path }}"
                                         data-filename="{{ item.name }}"
@@ -277,7 +277,7 @@
                                 </button>
                             {% endif %}
 
-                            {% if can_delete %}
+                            {% if can_delete and not item.is_archive and not in_archive %}
                                 <button class="btn btn-danger btn-sm delete-btn"
                                         data-filepath="{{ item.path }}"
                                         data-filename="{{ item.name }}"
@@ -285,6 +285,7 @@
                                     🗑️
                                 </button>
                             {% endif %}
+
                         </div>
                     </td>
                 </tr>
@@ -833,7 +834,7 @@ async function performSearch(query) {
             <tr>
                 <td colspan="6" style="text-align: center; padding: 3rem; color: var(--gray);">
                     <div style="font-size: 2rem; margin-bottom: 0.75rem;">⏳</div>
-                    <div>Searching...</div>
+                    <p>Searching...</p>
                 </td>
             </tr>`;
     }
@@ -1143,7 +1144,5 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 });
-
-
 </script>
 {% endblock %}

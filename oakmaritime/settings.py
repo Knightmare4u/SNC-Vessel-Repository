@@ -108,7 +108,7 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024 * 1024  # 10GB
 
 # File storage settings
 FILE_STORAGE_ROOT = config('FILE_STORAGE_ROOT', default=BASE_DIR / 'vessel_files')
-ARCHIVE_ROOT = config('ARCHIVE_ROOT', default=BASE_DIR / 'vessel_files_archive')
+ARCHIVE_ROOT = config('ARCHIVE_ROOT', default=BASE_DIR / 'vessel_files' / 'ARCHIVE')
 
 SECURE_SSL_REDIRECT = False
 CSRF_COOKIE_SECURE = False

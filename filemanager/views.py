@@ -8,6 +8,7 @@ import urllib.parse
 import uuid
 import zipfile
 from datetime import datetime
+from pathlib import Path
 from wsgiref.util import FileWrapper
 
 import mammoth
@@ -189,6 +190,12 @@ def file_browser(request, folder_path=''):
     base_path = settings.FILE_STORAGE_ROOT
     full_path = os.path.join(base_path, folder_path.lstrip('/'))
 
+    archive_path = Path(settings.ARCHIVE_ROOT)
+    full_path_obj = Path(full_path)
+    in_archive = full_path_obj == archive_path or full_path_obj.is_relative_to(
+        archive_path
+    )
+
     if not os.path.exists(full_path):
         os.makedirs(full_path, exist_ok=True)
 
@@ -216,6 +223,7 @@ def file_browser(request, folder_path=''):
                             os.path.getctime(item_path)
                         ),
                         'icon': '📁',
+                        'is_archive': Path(item_path) == archive_path,
                     }
                 )
                 folder_count += 1
@@ -261,6 +269,7 @@ def file_browser(request, folder_path=''):
         'can_delete': has_permission(request.user, folder_path, 'admin'),
         'can_rename': has_permission(request.user, folder_path, 'write'),
         'can_create_folder': has_permission(request.user, folder_path, 'write'),
+        'in_archive': in_archive,
         'total_size': format_file_size(total_size),
         'file_count': file_count,
         'folder_count': folder_count,
