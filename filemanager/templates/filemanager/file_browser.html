@@ -68,8 +68,6 @@
     z-index: 9999;
 }
 #copy-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-thead.search-mode th[onclick] { cursor: default !important; pointer-events: none; }
-thead.search-mode [id^="sort-indicator"] { display: none; }
 </style>
 {% endblock %}
 
@@ -92,14 +90,35 @@ thead.search-mode [id^="sort-indicator"] { display: none; }
         </div>
 
         <div style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
-            <div style="position: relative; display: flex;">
-    <input type="text" id="searchInput" placeholder="Search files..."
-           style="padding: 0.75rem; border: 1px solid #d1d5db; border-radius: 5px 0 0 5px; width: 250px; border-right: none;">
-    <button class="btn btn-secondary btn-sm" onclick="performSearch(document.getElementById('searchInput').value)"
-            style="border-radius: 0 5px 5px 0; border-left: none;">
-        🔍
-    </button>
-</div>
+            <div style="display: flex; border: 1px solid #d1d5db; border-radius: 5px; overflow: hidden;">
+                <select id="fileTypeFilter" onchange="triggerSearchIfActive()"
+                        style="padding: 0.6rem 0.75rem; border: none; border-right: 1px solid #d1d5db; background: #f9fafb; font-size: 0.875rem; outline: none; cursor: pointer;">
+                    <option value="">All Types</option>
+                    <option value="document">Documents</option>
+                    <option value="pdf">PDF</option>
+                    <option value="spreadsheet">Spreadsheets</option>
+                    <option value="presentation">Presentations</option>
+                    <option value="image">Images</option>
+                    <option value="video">Videos</option>
+                    <option value="audio">Audio</option>
+                    <option value="zip">ZIP</option>
+                </select>
+                <select id="searchScope" onchange="triggerSearchIfActive()"
+                        style="padding: 0.6rem 0.75rem; border: none; border-right: 1px solid #d1d5db; background: #f9fafb; font-size: 0.875rem; outline: none; cursor: pointer;">
+                    <option value="all">All Folders</option>
+                    <option value="current">Current Folder</option>
+                </select>
+                <div style="position: relative; display: flex; align-items: center; flex: 1;">
+                    <input type="text" id="searchInput" placeholder="Search files..."
+                           style="padding: 0.75rem; padding-right: 2rem; border: none; width: 220px; outline: none; flex: 1;">
+                    <button id="searchClearBtn" onclick="clearSearch()" title="Clear search"
+                            style="display: none; position: absolute; right: 0.4rem; background: none; border: none; cursor: pointer; color: #9ca3af; font-size: 1rem; line-height: 1; padding: 0;">✕</button>
+                </div>
+                <button onclick="performSearch(document.getElementById('searchInput').value)"
+                        style="border-radius: 0; border: none; border-left: 1px solid #d1d5db; padding: 0.75rem 1rem; background: #f9fafb; cursor: pointer; font-size: 1rem;">
+                    🔍
+                </button>
+            </div>
 
             {% if can_create_folder %}
             <button class="btn btn-secondary btn-sm" id="createFolderBtn">
@@ -362,6 +381,14 @@ thead.search-mode [id^="sort-indicator"] { display: none; }
 <script>
 const canDelete = {% if can_delete %}true{% else %}false{% endif %};
 
+function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
 // Fixed CSRF token function
 function getCSRFToken() {
     const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]');
@@ -501,7 +528,7 @@ async function submitRename() {
     const fullNewName = baseName + ext;
 
     if (!baseName) {
-        alert('Please enter a new name');
+        showToast('Please enter a new name', 'error');
         return;
     }
 
@@ -519,10 +546,10 @@ async function submitRename() {
             updateRowAfterRename(filePath, result.new_path, fullNewName, result.modified);
             showToast(`Renamed ${oldName} to ${fullNewName}`);
         } else {
-            alert('Error: ' + result.error);
+            showToast(result.error, 'error');
         }
     } catch (error) {
-        alert('Error: ' + error.message);
+        showToast(`Rename failed: ${error.message}`, 'error');
     }
 }
 
@@ -549,7 +576,7 @@ async function createFolder() {
     const folderPath = document.getElementById('currentFolderPath').value;
 
     if (!folderName) {
-        alert('Please enter a folder name');
+        showToast('Please enter a folder name', 'error');
         return;
     }
 
@@ -571,10 +598,10 @@ async function createFolder() {
         if (result.success) {
             location.reload();
         } else {
-            alert('Error creating folder: ' + result.error);
+            showToast(result.error, 'error');
         }
     } catch (error) {
-        alert('Error creating folder: ' + error.message);
+        showToast(`Create folder failed: ${error.message}`, 'error');
     }
 }
 
@@ -600,26 +627,27 @@ async function deleteFile(filePath, fileName) {
         if (result.success) {
             location.reload();
         } else {
-            alert('Error deleting file: ' + result.error);
+            showToast(result.error, 'error');
         }
     } catch (error) {
-        alert('Error deleting file: ' + error.message);
+        showToast(`Delete failed: ${error.message}`, 'error');
     }
 }
 
 function downloadFile(filePath) {
-    window.open(`/download/${filePath}`, '_blank');
+    window.open(`/download/${filePath}/`, '_blank');
 }
 
-function showToast(message) {
+function showToast(message, type = 'default') {
     const toast = document.getElementById('copy-toast');
     toast.textContent = message;
+    toast.style.background = type === 'error' ? '#dc2626' : type === 'success' ? '#16a34a' : '#1e293b';
     toast.classList.add('show');
-    setTimeout(() => toast.classList.remove('show'), 3000);
+    setTimeout(() => toast.classList.remove('show'), 3500);
 }
 
 function copyDownloadLink(btn, filePath) {
-    const url = `${window.location.origin}/download/${filePath}`;
+    const url = `${window.location.origin}/download/${filePath}/`;
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(url).then(() => {
             showToast('🔗 Link copied to clipboard!');
@@ -685,25 +713,26 @@ function handleFileUpload(files) {
     xhr.addEventListener('load', function() {
         if (xhr.status === 200) {
             let result;
-            try { result = JSON.parse(xhr.responseText); } catch { result = {}; }
-            if (result.success) {
+            try { result = JSON.parse(xhr.responseText); } catch { result = null; }
+            if (result && result.success) {
                 progressBar.style.width = '100%';
                 progressPercent.textContent = '100%';
-                progressStatus.innerHTML = '<div style="display:inline-flex;align-items:center;gap:0.4rem;background:#f0fdf4;color:#16a34a;padding:0.35rem 0.75rem;border-radius:999px;font-size:0.85rem;font-weight:500;">✅ Upload complete! Reloading...</div>';
+                showToast('✅ Upload complete!');
                 setTimeout(() => location.reload(), 1500);
             } else {
-                progressBar.style.background = '#ef4444';
-                progressStatus.innerHTML = '<div style="display:inline-flex;align-items:center;gap:0.4rem;background:#fee2e2;color:#dc2626;padding:0.35rem 0.75rem;border-radius:999px;font-size:0.85rem;font-weight:500;">❌ Upload failed: ' + (result.error || 'Unknown error') + '</div>';
+                uploadProgress.style.display = 'none';
+                const msg = result ? (result.error || 'Unknown error') : 'Session expired, please log in again';
+                showToast(msg, 'error');
             }
         } else {
-            progressBar.style.background = '#ef4444';
-            progressStatus.innerHTML = '<div style="display:inline-flex;align-items:center;gap:0.4rem;background:#fee2e2;color:#dc2626;padding:0.35rem 0.75rem;border-radius:999px;font-size:0.85rem;font-weight:500;">❌ Upload failed: HTTP ' + xhr.status + '</div>';
+            uploadProgress.style.display = 'none';
+            showToast('❌ Upload failed: HTTP ' + xhr.status, 'error');
         }
     });
 
     xhr.addEventListener('error', function() {
-        progressBar.style.background = '#ef4444';
-        progressStatus.innerHTML = '<div style="display:inline-flex;align-items:center;gap:0.4rem;background:#fee2e2;color:#dc2626;padding:0.35rem 0.75rem;border-radius:999px;font-size:0.85rem;font-weight:500;">❌ Upload error occurred</div>';
+        uploadProgress.style.display = 'none';
+        showToast('❌ Upload failed: ', 'error');
     });
 
     xhr.open('POST', '/upload/');
@@ -713,11 +742,11 @@ function handleFileUpload(files) {
 
 const PREVIEWABLE_EXTS = new Set([
     '.jpg','.jpeg','.png','.gif','.svg','.webp','.bmp','.ico',
-    '.mp4','.webm','.mov',
-    '.mp3','.wav','.ogg','.flac',
+    '.mp4','.webm',
+    '.mp3','.wav','.ogg','.flac','.m4a',
     '.pdf',
+    '.docx',
     '.txt','.csv','.html','.htm','.xml','.json','.md','.log',
-    '.doc','.docx',
     '.xls','.xlsx',
 ]);
 
@@ -750,10 +779,17 @@ document.addEventListener('DOMContentLoaded', function() {
     if (searchInput) {
         // Search on Enter key
         searchInput.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
+            if (e.key === 'Enter' && this.value.trim()) {
                 performSearch(this.value);
             }
         });
+
+        // Show/hide clear button
+        const searchClearBtn = document.getElementById('searchClearBtn');
+        function updateClearBtn() {
+            searchClearBtn.style.display = searchInput.value ? 'block' : 'none';
+        }
+        searchInput.addEventListener('input', updateClearBtn);
 
         // Optional: Search on input change with debounce
         let searchTimeout;
@@ -768,6 +804,13 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
+function triggerSearchIfActive() {
+    const query = document.getElementById('searchInput')?.value || '';
+    if (query.trim().length >= 2) {
+        performSearch(query);
+    }
+}
+
 async function performSearch(query) {
     if (!query.trim()) {
         // If search is empty, reload the normal file browser
@@ -775,14 +818,41 @@ async function performSearch(query) {
         return;
     }
 
+    const fileType = document.getElementById('fileTypeFilter')?.value || '';
+    const scope = document.getElementById('searchScope')?.value || 'all';
+    const currentFolder = document.getElementById('currentFolderPath')?.value || '';
+
+    let url = `/search/?q=${encodeURIComponent(query)}`;
+    if (fileType) url += `&type=${encodeURIComponent(fileType)}`;
+    if (scope === 'current' && currentFolder) url += `&folder=${encodeURIComponent(currentFolder)}`;
+
+    const tableBody = document.querySelector('tbody');
+    const searchBtn = document.querySelector('button[onclick^="performSearch"]');
+    if (tableBody) {
+        tableBody.innerHTML = `
+            <tr>
+                <td colspan="6" style="text-align: center; padding: 3rem; color: var(--gray);">
+                    <div style="font-size: 2rem; margin-bottom: 0.75rem;">⏳</div>
+                    <div>Searching...</div>
+                </td>
+            </tr>`;
+    }
+    if (searchBtn) searchBtn.disabled = true;
+
     try {
-        const response = await fetch(`/search/?q=${encodeURIComponent(query)}`);
+        const response = await fetch(url);
         const result = await response.json();
 
+        if (!response.ok) {
+            showToast((result.error || `HTTP ${response.status}`), 'error');
+            return;
+        }
         displaySearchResults(result.results, query);
     } catch (error) {
-        console.error('Search error:', error);
-        alert('Error performing search: ' + error.message);
+        console.error('Search failed:', error);
+        showToast(error.message, 'error');
+    } finally {
+        if (searchBtn) searchBtn.disabled = false;
     }
 }
 
@@ -793,7 +863,6 @@ function displaySearchResults(results, query) {
     const uploadProgress = document.getElementById('uploadProgress');
 
     const thead = document.querySelector('thead');
-    thead?.classList.add('search-mode');
 
     // Hide upload sections during search
     if (uploadZone) uploadZone.style.display = 'none';
@@ -806,7 +875,7 @@ function displaySearchResults(results, query) {
                 <td colspan="6" style="padding: 3rem; text-align: center; color: var(--gray);">
                     <div style="font-size: 3rem; margin-bottom: 1rem;">🔍</div>
                     <h3>No files found</h3>
-                    <p>No results found for "${query}"</p>
+                    <p>No results found for "${escapeHtml(query)}"</p>
                     <button class="btn btn-secondary btn-sm" style="margin-top: 1rem;" onclick="clearSearch()">
                         Clear Search
                     </button>
@@ -814,6 +883,7 @@ function displaySearchResults(results, query) {
             </tr>
         `;
     } else {
+        if (thead) thead.style.display = '';
         let html = '';
         results.forEach(item => {
             const modifiedDate = new Date(item.modified * 1000).toLocaleString();
@@ -821,35 +891,40 @@ function displaySearchResults(results, query) {
             html += `
                 <tr style="border-bottom: 1px solid #e5e7eb; transition: background-color 0.2s;"
                     onmouseover="this.style.backgroundColor='var(--light-gray)'"
-                    onmouseout="this.style.backgroundColor='var(--white)'">
+                    onmouseout="this.style.backgroundColor='var(--white)'"
+                    data-type="file"
+                    data-name="${escapeHtml(item.name.toLowerCase())}"
+                    data-size-bytes="${item.size}"
+                    data-modified="${item.modified}"
+                    data-created="${item.created || 0}">
                     <td style="padding: 1rem; text-align: center;">
                         <input type="checkbox" class="file-checkbox custom-checkbox"
-                               data-filepath="${item.path}"
-                               data-filename="${item.name}">
+                               data-filepath="${escapeHtml(item.path)}"
+                               data-filename="${escapeHtml(item.name)}">
                     </td>
                     <td style="padding: 1rem;">
                         <div style="display: flex; align-items: center; gap: 0.75rem;">
                             <div style="font-size: 1.5rem;">
-                                ${item.icon}
+                                ${escapeHtml(item.icon)}
                             </div>
                             <div>
                                 <span style="font-weight: 500; cursor: pointer; text-decoration: none;"
-                                      data-filepath="${item.path}"
-                                      data-filename="${item.name}"
-                                      data-extension="${item.extension}"
+                                      data-filepath="${escapeHtml(item.path)}"
+                                      data-filename="${escapeHtml(item.name)}"
+                                      data-extension="${escapeHtml(item.extension)}"
                                       onmouseover="this.style.textDecoration='underline'"
                                       onmouseout="this.style.textDecoration='none'"
                                       onclick="event.stopPropagation(); handlePreview(this.dataset.filepath, this.dataset.filename, this.dataset.extension)">
-                                    ${item.name}
+                                    ${escapeHtml(item.name)}
                                 </span>
                                 <div style="font-size: 0.875rem; color: var(--gray);">
-                                    In: ${item.folder || 'Root'}
+                                    In: ${escapeHtml(item.folder || 'Root')}
                                 </div>
                             </div>
                         </div>
                     </td>
                     <td style="padding: 1rem; color: var(--gray);">
-                        ${item.formatted_size}
+                        ${escapeHtml(item.formatted_size)}
                     </td>
                     <td style="padding: 1rem; color: var(--gray);">
                         ${modifiedDate}
@@ -860,19 +935,19 @@ function displaySearchResults(results, query) {
                     <td style="padding: 1rem; text-align: center;">
                         <div style="display: flex; gap: 0.5rem; justify-content: center;">
                             <button class="btn btn-secondary btn-sm download-btn"
-                                    data-filepath="${item.path}"
+                                    data-filepath="${escapeHtml(item.path)}"
                                     title="Download">
                                 ⬇️
                             </button>
                             <button class="btn btn-sm copy-link-btn"
-                                    data-filepath="${item.path}"
+                                    data-filepath="${escapeHtml(item.path)}"
                                     title="Copy Download Link">
                                 🔗
                             </button>
                             ${canDelete ? `
                             <button class="btn btn-danger btn-sm delete-btn"
-                                    data-filepath="${item.path}"
-                                    data-filename="${item.name}"
+                                    data-filepath="${escapeHtml(item.path)}"
+                                    data-filename="${escapeHtml(item.name)}"
                                     title="Delete">
                                 🗑️
                             </button>
@@ -889,7 +964,7 @@ function displaySearchResults(results, query) {
                 <td colspan="6" style="padding: 1rem; background: var(--light-blue); border-bottom: 2px solid var(--secondary-blue);">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <div>
-                            <strong>Search Results for "${query}"</strong>
+                            <strong>Search Results for "${escapeHtml(query)}"</strong>
                             <div style="font-size: 0.875rem; color: var(--gray);">
                                 Found ${results.length} file(s)
                             </div>
@@ -911,7 +986,7 @@ function displaySearchResults(results, query) {
         folderStats.innerHTML = `
             <div style="display: flex; gap: 2rem; color: var(--gray); font-size: 0.875rem;">
                 <div><strong>${results.length}</strong> files found</div>
-                <div><strong>${results.reduce((sum, item) => sum + item.size, 0)}</strong> total size</div>
+                <div><strong>${formatBytes(results.reduce((sum, item) => sum + item.size, 0))}</strong> total size</div>
             </div>
         `;
     }

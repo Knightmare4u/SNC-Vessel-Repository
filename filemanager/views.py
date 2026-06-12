@@ -41,6 +41,55 @@ from .utils import (
     log_activity,
 )
 
+FILE_TYPE_CATEGORIES = {
+    'document': ['.doc', '.docx', '.txt'],
+    'pdf': ['.pdf'],
+    'spreadsheet': ['.xls', '.xlsx'],
+    'presentation': ['.ppt', '.pptx'],
+    'image': ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp', '.ico'],
+    'video': ['.mp4', '.webm', '.avi', '.mov', '.wmv'],
+    'audio': ['.mp3', '.wav', '.ogg', '.flac', '.m4a'],
+    'zip': ['.zip', '.rar', '.7z', '.tar', '.gz'],
+}
+
+
+def get_file_icon(extension):
+    icon_map = {
+        '.pdf': '📕',
+        '.doc': '📘',
+        '.docx': '📘',
+        '.xls': '📗',
+        '.xlsx': '📗',
+        '.ppt': '📙',
+        '.pptx': '📙',
+        '.txt': '📄',
+        '.zip': '📦',
+        '.rar': '📦',
+        '.7z': '📦',
+        '.tar': '📦',
+        '.gz': '📦',
+        '.jpg': '🖼️',
+        '.jpeg': '🖼️',
+        '.png': '🖼️',
+        '.gif': '🖼️',
+        '.svg': '🖼️',
+        '.webp': '🖼️',
+        '.bmp': '🖼️',
+        '.ico': '🖼️',
+        '.mp4': '🎬',
+        '.webm': '🎬',
+        '.avi': '🎬',
+        '.mov': '🎬',
+        '.wmv': '🎬',
+        '.mp3': '🎵',
+        '.wav': '🎵',
+        '.ogg': '🎵',
+        '.flac': '🎵',
+        '.m4a': '🎵',
+        '.aac': '🎵',
+    }
+    return icon_map.get(extension, '📄')
+
 
 def custom_login(request):
     if request.user.is_authenticated:
@@ -215,31 +264,6 @@ def file_browser(request, folder_path=''):
         'folder_count': folder_count,
     }
     return render(request, 'filemanager/file_browser.html', context)
-
-
-def get_file_icon(extension):
-    icon_map = {
-        '.pdf': '📕',
-        '.doc': '📘',
-        '.docx': '📘',
-        '.xls': '📗',
-        '.xlsx': '📗',
-        '.ppt': '📙',
-        '.pptx': '📙',
-        '.txt': '📄',
-        '.zip': '📦',
-        '.rar': '📦',
-        '.jpg': '🖼️',
-        '.jpeg': '🖼️',
-        '.png': '🖼️',
-        '.gif': '🖼️',
-        '.mp4': '🎬',
-        '.avi': '🎬',
-        '.mov': '🎬',
-        '.mp3': '🎵',
-        '.wav': '🎵',
-    }
-    return icon_map.get(extension, '📄')
 
 
 @login_required
@@ -475,53 +499,146 @@ def delete_file(request):
 
 @login_required
 def search_files(request):
-    query = request.GET.get('q', '')
-    file_type = request.GET.get('type', '')
-
+    query = request.GET.get('q', '').strip()
     if not query:
         return JsonResponse({'results': []})
 
-    base_path = settings.FILE_STORAGE_ROOT
-    results = []
+    file_type = request.GET.get('type', '')
+    folder_filter = request.GET.get('folder', '')
 
-    # Search in all accessible folders
+    base_path = os.path.realpath(settings.FILE_STORAGE_ROOT)
+
+    results = []
+    seen = set()
+
+    allowed_exts = FILE_TYPE_CATEGORIES.get(file_type, []) if file_type else []
     user_permissions = get_user_permissions(request.user)
 
-    for perm in user_permissions:
-        if perm['permission'] in ['read', 'write', 'admin']:
-            folder_path = perm['folder_path']
-            full_search_path = os.path.join(base_path, folder_path.lstrip('/'))
+    # -------------------------
+    # Safe join (avoid path traversal + symlink escape)
+    # -------------------------
+    def safe_join(base, relative_path):
+        target = os.path.realpath(os.path.join(base, relative_path.lstrip('/')))
 
-            if os.path.exists(full_search_path):
-                for root, dirs, files in os.walk(full_search_path):
-                    for file in files:
-                        if query.lower() in file.lower():
-                            file_path = os.path.join(root, file)
-                            rel_path = os.path.relpath(file_path, base_path).replace(
-                                '\\', '/'
-                            )
+        if target != base and not target.startswith(base + os.sep):
+            return None
 
-                            file_ext = os.path.splitext(file)[1].lower()
+        return target
 
-                            # Filter by file type if specified
-                            if file_type and file_ext != f'.{file_type}':
-                                continue
+    # -------------------------
+    # Collect results (safe walk)
+    # -------------------------
+    def collect_results(search_path):
+        if not search_path or not os.path.exists(search_path):
+            return
 
-                            results.append(
-                                {
-                                    'name': file,
-                                    'path': rel_path,
-                                    'folder': os.path.dirname(rel_path),
-                                    'size': os.path.getsize(file_path),
-                                    'formatted_size': format_file_size(
-                                        os.path.getsize(file_path)
-                                    ),
-                                    'extension': file_ext,
-                                    'icon': get_file_icon(file_ext),
-                                    'modified': os.path.getmtime(file_path),
-                                    'created': os.path.getctime(file_path),
-                                }
-                            )
+        for root, _, files in os.walk(search_path, followlinks=False):
+            # Ensure traversal never escapes the storage root
+            root_real_path = os.path.realpath(root)
+            if root_real_path != base_path and not root_real_path.startswith(
+                base_path + os.sep
+            ):
+                continue
+
+            for file in files:
+                if query.lower() not in file.lower():
+                    continue
+
+                file_path = os.path.join(root, file)
+                file_real = os.path.realpath(file_path)
+
+                # Ensure file remains inside the storage root
+                if file_real != base_path and not file_real.startswith(
+                    base_path + os.sep
+                ):
+                    continue
+
+                rel_path = os.path.relpath(file_real, base_path).replace('\\', '/')
+
+                # Prevent duplicate results
+                if rel_path in seen:
+                    continue
+
+                # File type filtering
+                ext = os.path.splitext(file)[1].lower()
+                if allowed_exts and ext not in allowed_exts:
+                    continue
+
+                try:
+                    stat = os.stat(file_real)
+                except (FileNotFoundError, PermissionError, OSError):
+                    continue
+
+                seen.add(rel_path)
+
+                results.append(
+                    {
+                        'name': file,
+                        'path': '/' + rel_path,
+                        'folder': '/' + os.path.dirname(rel_path),
+                        'size': stat.st_size,
+                        'formatted_size': format_file_size(stat.st_size),
+                        'extension': ext,
+                        'icon': get_file_icon(ext),
+                        'modified': stat.st_mtime,
+                        'created': stat.st_ctime,
+                    }
+                )
+
+    # -------------------------
+    # Search within a specific folder
+    # -------------------------
+    if folder_filter:
+        folder = folder_filter.rstrip('/')
+
+        target_path = safe_join(base_path, folder)
+
+        if not target_path:
+            return JsonResponse({'error': 'Invalid path'}, status=400)
+
+        can_access = request.user.is_superuser
+
+        if not can_access:
+            for perm in user_permissions:
+                if perm['permission'] not in ['read', 'write', 'admin']:
+                    continue
+
+                perm_path = perm['folder_path'].rstrip('/')
+
+                if folder == perm_path or folder.startswith(perm_path + '/'):
+                    can_access = True
+                    break
+
+        if not can_access:
+            return JsonResponse({'error': 'Permission denied'}, status=403)
+
+        collect_results(target_path)
+
+    # -------------------------
+    # Search across all permitted folders
+    # -------------------------
+    else:
+        permitted = sorted(
+            perm['folder_path'].rstrip('/')
+            for perm in user_permissions
+            if perm['permission'] in ['read', 'write', 'admin']
+        )
+
+        deduped = []
+
+        for path in permitted:
+            if any(
+                path == parent or path.startswith(parent + '/') for parent in deduped
+            ):
+                continue
+
+            deduped.append(path)
+
+        for path in deduped:
+            target_path = safe_join(base_path, path)
+
+            if target_path:
+                collect_results(target_path)
 
     return JsonResponse({'results': results})
 
@@ -539,8 +656,13 @@ def create_folder(request):
         base_path = settings.FILE_STORAGE_ROOT
         full_path = os.path.join(base_path, folder_path.lstrip('/'), folder_name)
 
+        if os.path.exists(full_path):
+            return JsonResponse(
+                {'error': 'A folder with that name already exists'}, status=400
+            )
+
         try:
-            os.makedirs(full_path, exist_ok=True)
+            os.makedirs(full_path)
             return JsonResponse({'success': True})
         except Exception as e:
             return JsonResponse({'error': str(e)}, status=500)
@@ -786,7 +908,7 @@ def file_preview(request, file_path):
     )
 
     ext = os.path.splitext(full_path)[1].lower()
-    if ext in ('.docx', '.doc'):
+    if ext == '.docx':
         # tmp_path = None
         # pythoncom.CoInitialize()
         # try:
