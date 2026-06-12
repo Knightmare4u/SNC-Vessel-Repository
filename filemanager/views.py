@@ -14,6 +14,7 @@ import mammoth
 import openpyxl
 import pythoncom
 import win32com.client
+import xlrd
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
@@ -31,6 +32,7 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.text import get_valid_filename
 from django.views.decorators.csrf import csrf_exempt
 from docx2pdf import convert
+from xlrd.xldate import xldate_as_datetime
 
 from .models import FileActivity, FolderPermission, UploadSession, UserProfile
 from .utils import (
@@ -889,6 +891,19 @@ def bulk_download(request):
 
 @login_required
 def file_preview(request, file_path):
+    def get_value(cell, wb):
+        if cell.ctype == xlrd.XL_CELL_DATE:
+            return xldate_as_datetime(cell.value, wb.datemode).strftime(
+                '%Y-%m-%d %H:%M:%S'
+            )
+        return cell.value
+
+    def render_row(row, i):
+        tag = 'th' if i == 0 else 'td'
+        return ''.join(
+            f'<{tag}>{cell if cell is not None else ""}</{tag}>' for cell in row
+        )
+
     if not has_permission(request.user, os.path.dirname(file_path), 'read'):
         return JsonResponse({'error': 'Permission denied'}, status=403)
 
@@ -975,24 +990,38 @@ def file_preview(request, file_path):
     #     return response
 
     if ext in ('.xlsx', '.xls'):
-        wb = openpyxl.load_workbook(full_path, read_only=True, data_only=True)
         sheets_html = []
-        for sheet_name in wb.sheetnames:
-            ws = wb[sheet_name]
-            rows_html = []
-            for i, row in enumerate(ws.iter_rows(values_only=True)):
-                if all(cell is None for cell in row):
-                    continue
-                tag = 'th' if i == 0 else 'td'
-                cells = ''.join(
-                    f'<{tag}>{cell if cell is not None else ""}</{tag}>' for cell in row
+        if ext == '.xls':
+            wb = xlrd.open_workbook(full_path)
+            for sheet_name in wb.sheet_names():
+                ws = wb.sheet_by_name(sheet_name)
+                rows_html = []
+                for i in range(ws.nrows):
+                    row = [get_value(ws.cell(i, j), wb) for j in range(ws.ncols)]
+                    if all(cell in ('', None) for cell in row):
+                        continue
+                    rows_html.append(f'<tr>{render_row(row, i)}</tr>')
+
+                sheets_html.append(
+                    f'<h3>{sheet_name}</h3>'
+                    f'<div class="table-wrap"><table>{"".join(rows_html)}</table></div>'
                 )
-                rows_html.append(f'<tr>{cells}</tr>')
-            sheets_html.append(
-                f'<h3>{sheet_name}</h3>'
-                f'<div class="table-wrap"><table>{"".join(rows_html)}</table></div>'
-            )
-        wb.close()
+        else:
+            wb = openpyxl.load_workbook(full_path, read_only=True, data_only=True)
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                rows_html = []
+                for i, row in enumerate(ws.iter_rows(values_only=True)):
+                    if all(cell in ('', None) for cell in row):
+                        continue
+                    rows_html.append(f'<tr>{render_row(row, i)}</tr>')
+
+                sheets_html.append(
+                    f'<h3>{sheet_name}</h3>'
+                    f'<div class="table-wrap"><table>{"".join(rows_html)}</table></div>'
+                )
+            wb.close()
+
         html = (
             '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
             'body{font-family:sans-serif;padding:20px 40px}'
