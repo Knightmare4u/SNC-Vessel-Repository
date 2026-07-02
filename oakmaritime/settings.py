@@ -11,8 +11,8 @@ SECRET_KEY = config(
 
 DEBUG = config('DEBUG', default=True, cast=bool)
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '192.168.10.11']
-CSRF_TRUSTED_ORIGINS = ['https://*.ngrok-free.app']
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '192.168.10.11', '.ngrok-free.dev']
+CSRF_TRUSTED_ORIGINS = ['https://*.ngrok-free.dev']
 
 INSTALLED_APPS = [
     'django.contrib.admin',
