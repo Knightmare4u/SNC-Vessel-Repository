@@ -1,0 +1,27 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Git
+.git/
+.gitignore
+
+# Database
+*.sqlite3
+
+# Django runtime data
+media/
+staticfiles/
+vessel_files/
+
+# Backups
+backups/
+
+# Environment / secrets
+.env
+.env.example
+
+# Logs
+*.log

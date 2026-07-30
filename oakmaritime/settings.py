@@ -60,9 +60,7 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
-        'OPTIONS': {
-            'timeout': 20,
-        },
+        'OPTIONS': {'timeout': 20},
     }
 }
 
@@ -115,12 +113,12 @@ SECURE_SSL_REDIRECT = False
 CSRF_COOKIE_SECURE = False
 SESSION_COOKIE_SECURE = False
 
-
-# Security settings for production
 if not DEBUG:
-    SECURE_SSL_REDIRECT = True
-    SESSION_COOKIE_SECURE = True
-    CSRF_COOKIE_SECURE = True
+    pass
+    # Uncomment once served over HTTPS (e.g. behind an HTTPS reverse proxy)
+    # SECURE_SSL_REDIRECT = True
+    # SESSION_COOKIE_SECURE = True
+    # CSRF_COOKIE_SECURE = True
 
 # Whitenoise compression
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
