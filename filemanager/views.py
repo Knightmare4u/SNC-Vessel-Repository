@@ -2,19 +2,16 @@ import io
 import json
 import mimetypes
 import os
+import re
 import shutil
-import tempfile
 import urllib.parse
 import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from wsgiref.util import FileWrapper
 
 import mammoth
 import openpyxl
-import pythoncom
-import win32com.client
 import xlrd
 from django.conf import settings
 from django.contrib import messages
@@ -27,12 +24,19 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import PasswordChangeForm
 from django.db import transaction
 from django.db.models import Q
-from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
+from django.http import (
+    FileResponse,
+    HttpResponse,
+    JsonResponse,
+    StreamingHttpResponse,
+)
 from django.shortcuts import get_object_or_404, redirect, render
-from django.utils.http import url_has_allowed_host_and_scheme
+from django.utils.http import (
+    content_disposition_header,
+    url_has_allowed_host_and_scheme,
+)
 from django.utils.text import get_valid_filename
 from django.views.decorators.csrf import csrf_exempt
-from docx2pdf import convert
 from xlrd.xldate import xldate_as_datetime
 
 from .models import FileActivity, FolderPermission, UploadSession, UserProfile
@@ -296,11 +300,12 @@ def download_file(request, file_path):
             os.path.getsize(full_path),
         )
 
-        wrapper = FileWrapper(open(full_path, 'rb'))
         content_type, encoding = mimetypes.guess_type(full_path)
-        response = HttpResponse(wrapper, content_type=content_type)
-        response['Content-Disposition'] = (
-            f'attachment; filename="{os.path.basename(file_path)}"'
+        response = FileResponse(
+            open(full_path, 'rb'),
+            content_type=content_type,
+            as_attachment=True,
+            filename=os.path.basename(file_path),
         )
         return response
 
@@ -898,6 +903,22 @@ def bulk_download(request):
 #     return JsonResponse({'error': 'File not found'}, status=404)
 
 
+RANGE_HEADER_RE = re.compile(r'bytes=(\d*)-(\d*)')
+
+
+def _iter_file_chunk(f, length, chunk_size=8192):
+    remaining = length
+    try:
+        while remaining > 0:
+            data = f.read(min(chunk_size, remaining))
+            if not data:
+                break
+            remaining -= len(data)
+            yield data
+    finally:
+        f.close()
+
+
 @login_required
 def file_preview(request, file_path):
     def get_value(cell, wb):
@@ -922,39 +943,8 @@ def file_preview(request, file_path):
     if not os.path.exists(full_path) or not os.path.isfile(full_path):
         return JsonResponse({'error': 'File not found'}, status=404)
 
-    log_activity(
-        request.user,
-        os.path.basename(file_path),
-        file_path,
-        'view',
-        request.META.get('REMOTE_ADDR'),
-        os.path.getsize(full_path),
-    )
-
     ext = os.path.splitext(full_path)[1].lower()
     if ext == '.docx':
-        # tmp_path = None
-        # pythoncom.CoInitialize()
-        # try:
-        #     with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
-        #         tmp_path = tmp.name
-        #     convert(full_path, tmp_path)
-        # except Exception:
-        #     if tmp_path and os.path.exists(tmp_path):
-        #         os.unlink(tmp_path)
-        #     return JsonResponse(
-        #         {'error': 'Word preview unavailable: Microsoft Word is not installed on this server.'},
-        #         status=503,
-        #     )
-        # finally:
-        #     pythoncom.CoUninitialize()
-        # with open(tmp_path, 'rb') as f:
-        #     pdf_bytes = f.read()
-        # os.unlink(tmp_path)
-        # stem = os.path.splitext(os.path.basename(file_path))[0]
-        # response = HttpResponse(pdf_bytes, content_type='application/pdf')
-        # response['Content-Disposition'] = f'inline; filename="{stem}.pdf"'
-        # return response
         with open(full_path, 'rb') as f:
             result = mammoth.convert_to_html(f)
         html = (
@@ -963,40 +953,6 @@ def file_preview(request, file_path):
             f'</head><body>{result.value}</body></html>'
         )
         return HttpResponse(html, content_type='text/html; charset=utf-8')
-
-    # if ext in ('.pptx', '.ppt'):
-    #     tmp_path = None
-    #     pythoncom.CoInitialize()
-    #     try:
-    #         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
-    #             tmp_path = tmp.name
-    #         ppt = win32com.client.Dispatch('PowerPoint.Application')
-    #         try:
-    #             deck = ppt.Presentations.Open(
-    #                 full_path, ReadOnly=True, Untitled=False, WithWindow=False
-    #             )
-    #             deck.SaveAs(tmp_path, 32)  # 32 = ppSaveAsPDF
-    #             deck.Close()
-    #         finally:
-    #             ppt.Quit()
-    #     except Exception:
-    #         if tmp_path and os.path.exists(tmp_path):
-    #             os.unlink(tmp_path)
-    #         return JsonResponse(
-    #             {
-    #                 'error': 'PowerPoint preview unavailable: Microsoft PowerPoint is not installed on this server.'
-    #             },
-    #             status=503,
-    #         )
-    #     finally:
-    #         pythoncom.CoUninitialize()
-    #     with open(tmp_path, 'rb') as f:
-    #         pdf_bytes = f.read()
-    #     os.unlink(tmp_path)
-    #     stem = os.path.splitext(os.path.basename(file_path))[0]
-    #     response = HttpResponse(pdf_bytes, content_type='application/pdf')
-    #     response['Content-Disposition'] = f'inline; filename="{stem}.pdf"'
-    #     return response
 
     if ext in ('.xlsx', '.xls'):
         sheets_html = []
@@ -1052,11 +1008,50 @@ def file_preview(request, file_path):
     elif not content_type:
         content_type = 'application/octet-stream'
 
-    wrapper = FileWrapper(open(full_path, 'rb'))
-    response = HttpResponse(wrapper, content_type=content_type)
-    response['Content-Disposition'] = (
-        f'inline; filename="{os.path.basename(file_path)}"'
+    file_size = os.path.getsize(full_path)
+    range_match = RANGE_HEADER_RE.fullmatch(request.META.get('HTTP_RANGE', ''))
+
+    if range_match and (range_match.group(1) or range_match.group(2)):
+        start_str, end_str = range_match.groups()
+        if start_str:
+            start = int(start_str)
+            end = int(end_str) if end_str else file_size - 1
+        else:
+            start = max(file_size - int(end_str), 0)
+            end = file_size - 1
+
+        if file_size == 0 or start > end or start >= file_size:
+            response = HttpResponse(status=416)
+            response['Content-Range'] = f'bytes */{file_size}'
+            return response
+
+        end = min(end, file_size - 1)
+        length = end - start + 1
+
+        f = open(full_path, 'rb')
+        f.seek(start)
+        response = StreamingHttpResponse(
+            _iter_file_chunk(f, length), status=206, content_type=content_type
+        )
+        response['Content-Range'] = f'bytes {start}-{end}/{file_size}'
+        response['Content-Length'] = str(length)
+    else:
+        response = FileResponse(open(full_path, 'rb'), content_type=content_type)
+
+    response['Accept-Ranges'] = 'bytes'
+    disposition = content_disposition_header(False, os.path.basename(file_path))
+    if disposition:
+        response['Content-Disposition'] = disposition
+
+    log_activity(
+        request.user,
+        os.path.basename(file_path),
+        file_path,
+        'view',
+        request.META.get('REMOTE_ADDR'),
+        os.path.getsize(full_path),
     )
+
     return response
 
 
