@@ -11,7 +11,14 @@ SECRET_KEY = config(
 
 DEBUG = config('DEBUG', default=True, cast=bool)
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '192.168.10.11', '.ngrok-free.dev']
+ALLOWED_HOSTS = [
+    'localhost',
+    '127.0.0.1',
+    '192.168.10.10',
+    '192.168.10.11',
+    '121.200.241.178',
+    '.ngrok-free.dev',
+]
 CSRF_TRUSTED_ORIGINS = ['https://*.ngrok-free.dev']
 
 INSTALLED_APPS = [
@@ -114,7 +121,7 @@ LOGOUT_REDIRECT_URL = '/'
 
 # SESSION_ENGINE = 'django.contrib.sessions.backends.db'
 
-FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024 * 1024  # 10GB
+# FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024
 DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024 * 1024  # 10GB
 
 # File storage settings
