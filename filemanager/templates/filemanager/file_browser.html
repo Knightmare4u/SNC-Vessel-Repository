@@ -210,14 +210,16 @@
                                     {{ item.icon }}
                                 {% endif %}
                             </div>
-                            <div>
+                            <div style="min-width: 0;">
                                 {% if item.type == 'folder' %}
                                     <a href="{% url 'file_browser' item.path %}"
-                                       style="text-decoration: none; color: var(--primary-blue); font-weight: 500;">
+                                       title="{{ item.name }}"
+                                       style="text-decoration: none; color: var(--primary-blue); font-weight: 500; display: block; max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
                                         {{ item.name }}
                                     </a>
                                 {% else %}
-                                    <span style="font-weight: 500; cursor: pointer; text-decoration: none;"
+                                    <span style="font-weight: 500; cursor: pointer; text-decoration: none; display: block; max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                                          title="{{ item.name }}"
                                           data-filepath="{{ item.path }}"
                                           data-filename="{{ item.name }}"
                                           data-extension="{{ item.extension }}"
@@ -908,8 +910,9 @@ function displaySearchResults(results, query) {
                             <div style="font-size: 1.5rem;">
                                 ${escapeHtml(item.icon)}
                             </div>
-                            <div>
-                                <span style="font-weight: 500; cursor: pointer; text-decoration: none;"
+                            <div style="min-width: 0;">
+                                <span style="font-weight: 500; cursor: pointer; text-decoration: none; display: block; max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                                      title="${escapeHtml(item.name)}"
                                       data-filepath="${escapeHtml(item.path)}"
                                       data-filename="${escapeHtml(item.name)}"
                                       data-extension="${escapeHtml(item.extension)}"
