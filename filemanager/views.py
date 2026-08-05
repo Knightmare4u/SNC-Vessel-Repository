@@ -1,5 +1,6 @@
 import io
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -47,6 +48,8 @@ from .utils import (
     has_permission,
     log_activity,
 )
+
+logger = logging.getLogger(__name__)
 
 FILE_TYPE_CATEGORIES = {
     'document': ['.doc', '.docx', '.txt'],
@@ -327,9 +330,9 @@ def upload_file(request):
             folder_path = folder_path[1:]
         full_path = os.path.join(base_path, folder_path)
 
-        print(f"DEBUG: Base path: {base_path}")
-        print(f"DEBUG: Folder path: {folder_path}")
-        print(f"DEBUG: Full path: {full_path}")
+        logger.info("Base path: %s", base_path)
+        logger.info("Folder path: %s", folder_path)
+        logger.info("Full path: %s", full_path)
 
         # Ensure directory exists
         os.makedirs(full_path, exist_ok=True)
@@ -343,7 +346,7 @@ def upload_file(request):
                 filename = get_valid_filename(file.name)
                 file_path = os.path.join(full_path, filename)
 
-                print(f"DEBUG: Saving file: {file_path}")
+                logger.info("Saving file: %s", file_path)
 
                 # Check if file already exists
                 counter = 1
@@ -354,9 +357,17 @@ def upload_file(request):
                     counter += 1
 
                 # Save file
-                with open(file_path, 'wb+') as destination:
+                logger.info("Original size: %s", file.size)
+
+                written = 0
+
+                with open(file_path, "wb+") as destination:
                     for chunk in file.chunks():
                         destination.write(chunk)
+                        written += len(chunk)
+
+                logger.info("Written size: %s", written)
+                logger.info("Saved size: %s", os.path.getsize(file_path))
 
                 file_size = os.path.getsize(file_path)
                 total_size += file_size
@@ -380,10 +391,10 @@ def upload_file(request):
                     }
                 )
 
-                print(f"DEBUG: Successfully uploaded: {filename}")
+                logger.info("Successfully uploaded: %s", filename)
 
             except Exception as e:
-                print(f"DEBUG: Upload error: {str(e)}")
+                logger.exception("Upload error for %s", file.name)
                 return JsonResponse(
                     {'error': f'Error uploading {file.name}: {str(e)}'}, status=500
                 )
@@ -1115,8 +1126,8 @@ def admin_get_folder_tree(request):
                         'children': build_tree(rel_path),
                     }
                     tree.append(node)
-        except Exception as e:
-            print(f"Error reading directory {full_path}: {e}")
+        except Exception:
+            logger.exception("Error reading directory %s", full_path)
 
         return tree
 

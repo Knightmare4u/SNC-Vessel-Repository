@@ -223,5 +223,8 @@ __marimo__/
 vessel_files/
 vessel_files_archive/
 
+# Logs (this project)
+logs/
+
 # Backups
 backups/
