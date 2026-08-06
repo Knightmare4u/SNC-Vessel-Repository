@@ -210,16 +210,14 @@
                                     {{ item.icon }}
                                 {% endif %}
                             </div>
-                            <div style="min-width: 0;">
+                            <div>
                                 {% if item.type == 'folder' %}
                                     <a href="{% url 'file_browser' item.path %}"
-                                       title="{{ item.name }}"
-                                       style="text-decoration: none; color: var(--primary-blue); font-weight: 500; display: block; max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                                       style="text-decoration: none; color: var(--primary-blue); font-weight: 500;">
                                         {{ item.name }}
                                     </a>
                                 {% else %}
-                                    <span style="font-weight: 500; cursor: pointer; text-decoration: none; display: block; max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                                          title="{{ item.name }}"
+                                    <span style="font-weight: 500; cursor: pointer; text-decoration: none;"
                                           data-filepath="{{ item.path }}"
                                           data-filename="{{ item.name }}"
                                           data-extension="{{ item.extension }}"
@@ -910,9 +908,8 @@ function displaySearchResults(results, query) {
                             <div style="font-size: 1.5rem;">
                                 ${escapeHtml(item.icon)}
                             </div>
-                            <div style="min-width: 0;">
-                                <span style="font-weight: 500; cursor: pointer; text-decoration: none; display: block; max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                                      title="${escapeHtml(item.name)}"
+                            <div>
+                                <span style="font-weight: 500; cursor: pointer; text-decoration: none;"
                                       data-filepath="${escapeHtml(item.path)}"
                                       data-filename="${escapeHtml(item.name)}"
                                       data-extension="${escapeHtml(item.extension)}"
