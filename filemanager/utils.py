@@ -1,8 +1,4 @@
-import io
 import os
-import queue
-import threading
-import zipfile
 
 from django.conf import settings
 
@@ -69,36 +65,3 @@ def get_folder_size(folder_path):
             filepath = os.path.join(dirpath, filename)
             total_size += os.path.getsize(filepath)
     return total_size
-
-
-class ZipStream:
-
-    class _QueueStream(io.RawIOBase):
-        def __init__(self, q):
-            self._q = q
-
-        def write(self, data):
-            self._q.put(bytes(data) if isinstance(data, memoryview) else data)
-            return len(data)
-
-    def __init__(self, file_pairs):
-        self._file_pairs = file_pairs
-        self._queue = queue.Queue()
-
-    def __iter__(self):
-        threading.Thread(target=self._worker, daemon=True).start()
-        while True:
-            chunk = self._queue.get()
-            if chunk is None:
-                break
-            yield chunk
-
-    def _worker(self):
-        try:
-            with zipfile.ZipFile(
-                self._QueueStream(self._queue), 'w', zipfile.ZIP_STORED
-            ) as zf:
-                for arcname, full_path in self._file_pairs:
-                    zf.write(full_path, arcname)
-        finally:
-            self._queue.put(None)

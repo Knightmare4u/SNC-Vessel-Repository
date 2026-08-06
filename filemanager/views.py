@@ -14,6 +14,7 @@ from pathlib import Path
 import mammoth
 import openpyxl
 import xlrd
+import zipstream
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
@@ -42,7 +43,6 @@ from xlrd.xldate import xldate_as_datetime
 
 from .models import FileActivity, FolderPermission, UploadSession, UserProfile
 from .utils import (
-    ZipStream,
     format_file_size,
     get_user_permissions,
     has_permission,
@@ -783,6 +783,60 @@ def rename_file(request):
         return JsonResponse({'error': str(e)}, status=500)
 
 
+# @login_required
+# def bulk_download(request):
+#     if request.method != 'POST':
+#         return JsonResponse({'error': 'Invalid request'}, status=400)
+
+#     file_paths = request.POST.getlist('paths')
+
+#     if not file_paths:
+#         return JsonResponse({'error': 'No files selected'}, status=400)
+
+#     base_path = settings.FILE_STORAGE_ROOT
+#     buffer = io.BytesIO()
+
+#     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as zf:
+#         for file_path in file_paths:
+#             if not has_permission(
+#                 request.user, os.path.dirname(file_path.rstrip('/\\')), 'read'
+#             ):
+#                 continue
+#             full_path = os.path.join(base_path, file_path.lstrip('/'))
+#             if not os.path.abspath(full_path).startswith(os.path.abspath(base_path)):
+#                 continue
+#             if os.path.isfile(full_path):
+#                 zf.write(full_path, os.path.basename(full_path))
+#                 log_activity(
+#                     request.user,
+#                     os.path.basename(file_path),
+#                     file_path,
+#                     'download',
+#                     request.META.get('REMOTE_ADDR'),
+#                     os.path.getsize(full_path),
+#                 )
+#             elif os.path.isdir(full_path):
+#                 parent_path = os.path.dirname(full_path.rstrip('/\\'))
+#                 for root, _, files in os.walk(full_path):
+#                     for filename in files:
+#                         file_full = os.path.join(root, filename)
+#                         arcname = os.path.relpath(file_full, parent_path)
+#                         zf.write(file_full, arcname)
+#                         log_activity(
+#                             request.user,
+#                             filename,
+#                             os.path.relpath(file_full, base_path),
+#                             'download',
+#                             request.META.get('REMOTE_ADDR'),
+#                             os.path.getsize(file_full),
+#                         )
+
+#     buffer.seek(0)
+#     response = HttpResponse(buffer.read(), content_type='application/zip')
+#     response['Content-Disposition'] = 'attachment; filename="download.zip"'
+#     return response
+
+
 @login_required
 def bulk_download(request):
     if request.method != 'POST':
@@ -794,90 +848,58 @@ def bulk_download(request):
         return JsonResponse({'error': 'No files selected'}, status=400)
 
     base_path = settings.FILE_STORAGE_ROOT
-    buffer = io.BytesIO()
+    base_path_abs = os.path.abspath(base_path)
+    zs = zipstream.ZipStream()
+    total_size = 0
 
-    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as zf:
-        for file_path in file_paths:
-            if not has_permission(
-                request.user, os.path.dirname(file_path.rstrip('/\\')), 'read'
-            ):
-                continue
-            full_path = os.path.join(base_path, file_path.lstrip('/'))
-            if not os.path.abspath(full_path).startswith(os.path.abspath(base_path)):
-                continue
-            if os.path.isfile(full_path):
-                zf.write(full_path, os.path.basename(full_path))
-                log_activity(
-                    request.user,
-                    os.path.basename(file_path),
-                    file_path,
-                    'download',
-                    request.META.get('REMOTE_ADDR'),
-                    os.path.getsize(full_path),
-                )
-            elif os.path.isdir(full_path):
-                parent_path = os.path.dirname(full_path.rstrip('/\\'))
-                for root, _, files in os.walk(full_path):
-                    for filename in files:
-                        file_full = os.path.join(root, filename)
-                        arcname = os.path.relpath(file_full, parent_path)
-                        zf.write(file_full, arcname)
-                        log_activity(
-                            request.user,
-                            filename,
-                            os.path.relpath(file_full, base_path),
-                            'download',
-                            request.META.get('REMOTE_ADDR'),
-                            os.path.getsize(file_full),
-                        )
+    for file_path in file_paths:
+        if not has_permission(
+            request.user, os.path.dirname(file_path.rstrip('/\\')), 'read'
+        ):
+            continue
+        full_path = os.path.join(base_path, file_path.lstrip('/'))
+        full_path_abs = os.path.abspath(full_path)
+        try:
+            within_base = (
+                os.path.commonpath([base_path_abs, full_path_abs]) == base_path_abs
+            )
+        except ValueError:
+            within_base = False
+        if not within_base:
+            continue
+        if os.path.isfile(full_path):
+            zs.add_path(full_path, arcname=os.path.relpath(full_path, base_path))
+            total_size += os.path.getsize(full_path)
+        elif os.path.isdir(full_path):
+            parent_path = os.path.dirname(full_path.rstrip('/\\'))
+            for root, _, files in os.walk(full_path):
+                for filename in files:
+                    file_full = os.path.join(root, filename)
+                    arcname = os.path.relpath(file_full, parent_path)
+                    zs.add_path(file_full, arcname=arcname, recurse=False)
+                    total_size += os.path.getsize(file_full)
 
-    buffer.seek(0)
-    response = HttpResponse(buffer.read(), content_type='application/zip')
+    current_folder = os.path.dirname(file_paths[0].rstrip('/\\')) or '/'
+
+    MAX_NAMES_SHOWN = 5
+    names = [os.path.basename(p.rstrip('/\\')) for p in file_paths[:MAX_NAMES_SHOWN]]
+    name_summary = ', '.join(names)
+    if len(file_paths) > MAX_NAMES_SHOWN:
+        name_summary += f', +{len(file_paths) - MAX_NAMES_SHOWN} more'
+    name_summary = name_summary[:255]
+
+    log_activity(
+        request.user,
+        name_summary,
+        current_folder,
+        'download',
+        request.META.get('REMOTE_ADDR'),
+        total_size,
+    )
+
+    response = StreamingHttpResponse(zs, content_type='application/zip')
     response['Content-Disposition'] = 'attachment; filename="download.zip"'
     return response
-
-
-# @login_required
-# def bulk_download(request):
-#     if request.method != 'POST':
-#         return JsonResponse({'error': 'Invalid request'}, status=400)
-
-#     file_paths = request.POST.getlist('paths')
-#     if not file_paths:
-#         return JsonResponse({'error': 'No files selected'}, status=400)
-
-#     base_path = settings.FILE_STORAGE_ROOT
-#     valid_files = []
-#     for file_path in file_paths:
-#         if not has_permission(request.user, os.path.dirname(file_path), 'read'):
-#             continue
-#         full_path = os.path.join(base_path, file_path.lstrip('/'))
-#         if not os.path.abspath(full_path).startswith(os.path.abspath(base_path)):
-#             continue
-#         if os.path.exists(full_path) and os.path.isfile(full_path):
-#             valid_files.append((file_path, full_path))
-
-#     if not valid_files:
-#         return JsonResponse({'error': 'No accessible files'}, status=404)
-
-#     for file_path, full_path in valid_files:
-#         log_activity(
-#             request.user,
-#             os.path.basename(file_path),
-#             file_path,
-#             'download',
-#             request.META.get('REMOTE_ADDR'),
-#             os.path.getsize(full_path),
-#         )
-
-#     files_to_zip = [
-#         (os.path.basename(file_path), full_path) for file_path, full_path in valid_files
-#     ]
-#     response = StreamingHttpResponse(
-#         ZipStream(files_to_zip), content_type='application/zip'
-#     )
-#     response['Content-Disposition'] = 'attachment; filename="download.zip"'
-#     return response
 
 
 # @login_required
