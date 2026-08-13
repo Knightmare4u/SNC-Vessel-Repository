@@ -44,7 +44,7 @@ services:
       --timeout 600
       --capture-output
       --access-logfile logs/access.log
-      --access-logformat '%(h)s %(t)s \"%(r)s\" %(s)s %(L)s seconds'
+      --access-logformat '%(p)s %(h)s %(t)s \"%(r)s\" %(s)s %(L)s seconds'
       --error-logfile logs/error.log"
     ports:
       - "80:8000"
