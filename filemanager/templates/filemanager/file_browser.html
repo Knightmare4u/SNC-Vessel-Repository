@@ -265,6 +265,11 @@
                                    title="Open Folder">
                                     📂
                                 </a>
+                                <button class="btn btn-sm copy-link-btn copy-folder-link-btn"
+                                        data-filepath="{{ item.path }}"
+                                        title="Copy Folder Link">
+                                    🔗
+                                </button>
                             {% endif %}
 
                             {% if can_rename and not item.is_archive and not in_archive %}
@@ -442,6 +447,9 @@ document.addEventListener('DOMContentLoaded', function() {
         if (e.target.classList.contains('download-btn')) {
             const filePath = e.target.dataset.filepath;
             downloadFile(filePath);
+        } else if (e.target.classList.contains('copy-folder-link-btn')) {
+            const folderPath = e.target.dataset.filepath;
+            copyFolderLink(e.target, folderPath);
         } else if (e.target.classList.contains('copy-link-btn')) {
             const filePath = e.target.dataset.filepath;
             copyDownloadLink(e.target, filePath);
@@ -664,6 +672,26 @@ function copyDownloadLink(btn, filePath) {
         document.execCommand('copy');
         document.body.removeChild(ta);
         showToast('🔗 Link copied to clipboard!');
+    }
+}
+
+function copyFolderLink(btn, folderPath) {
+    const url = `${window.location.origin}/browser/${folderPath}/`;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(() => {
+            showToast('🔗 Folder link copied to clipboard!');
+        });
+    } else {
+        // Fallback for non-secure contexts (HTTP)
+        const ta = document.createElement('textarea');
+        ta.value = url;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        showToast('🔗 Folder link copied to clipboard!');
     }
 }
 
