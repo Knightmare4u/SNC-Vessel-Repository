@@ -18,8 +18,9 @@ ALLOWED_HOSTS = [
     '192.168.10.11',
     '121.200.241.178',
     '.ngrok-free.dev',
+    'snseafiles.sinceregp.com'
 ]
-CSRF_TRUSTED_ORIGINS = ['https://*.ngrok-free.dev']
+CSRF_TRUSTED_ORIGINS = ['https://snseafiles.sinceregp.com']
 
 INSTALLED_APPS = [
     'django.contrib.admin',
