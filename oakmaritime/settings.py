@@ -18,7 +18,7 @@ ALLOWED_HOSTS = [
     '192.168.10.11',
     '121.200.241.178',
     '.ngrok-free.dev',
-    'snseafiles.sinceregp.com'
+    'snseafiles.sinceregp.com',
 ]
 CSRF_TRUSTED_ORIGINS = ['https://snseafiles.sinceregp.com']
 
@@ -141,7 +141,14 @@ if not DEBUG:
     # CSRF_COOKIE_SECURE = True
 
 # Whitenoise compression
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+    },
+}
 
 LOG_DIR = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)

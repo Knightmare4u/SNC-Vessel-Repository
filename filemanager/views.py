@@ -33,12 +33,12 @@ from django.http import (
     StreamingHttpResponse,
 )
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils.html import escape
 from django.utils.http import (
     content_disposition_header,
     url_has_allowed_host_and_scheme,
 )
 from django.utils.text import get_valid_filename
-from django.views.decorators.csrf import csrf_exempt
 from xlrd.xldate import xldate_as_datetime
 
 from .models import FileActivity, FolderPermission, UploadSession, UserProfile
@@ -316,7 +316,6 @@ def download_file(request, file_path):
 
 
 @login_required
-@csrf_exempt
 def upload_file(request):
     if request.method == 'POST':
         folder_path = request.POST.get('folder_path', '')
@@ -964,7 +963,7 @@ def file_preview(request, file_path):
     def render_row(row, i):
         tag = 'th' if i == 0 else 'td'
         return ''.join(
-            f'<{tag}>{cell if cell is not None else ""}</{tag}>' for cell in row
+            f'<{tag}>{escape(cell) if cell is not None else ""}</{tag}>' for cell in row
         )
 
     if not has_permission(request.user, os.path.dirname(file_path), 'read'):
@@ -1001,7 +1000,7 @@ def file_preview(request, file_path):
                     rows_html.append(f'<tr>{render_row(row, i)}</tr>')
 
                 sheets_html.append(
-                    f'<h3>{sheet_name}</h3>'
+                    f'<h3>{escape(sheet_name)}</h3>'
                     f'<div class="table-wrap"><table>{"".join(rows_html)}</table></div>'
                 )
         else:
@@ -1015,7 +1014,7 @@ def file_preview(request, file_path):
                     rows_html.append(f'<tr>{render_row(row, i)}</tr>')
 
                 sheets_html.append(
-                    f'<h3>{sheet_name}</h3>'
+                    f'<h3>{escape(sheet_name)}</h3>'
                     f'<div class="table-wrap"><table>{"".join(rows_html)}</table></div>'
                 )
             wb.close()
