@@ -535,7 +535,7 @@ async function submitRename() {
     const baseName = document.getElementById('renameInput').value.trim();
     const ext = document.getElementById('renameFileExt').value;
     const filePath = document.getElementById('renameFilePath').value;
-    const oldName = document.querySelector(`.rename-btn[data-filepath="${filePath}"]`).dataset.filename;
+    const oldName = document.querySelector(`.rename-btn[data-filepath="${CSS.escape(filePath)}"]`).dataset.filename;
     const fullNewName = baseName + ext;
 
     if (!baseName) {
@@ -553,9 +553,11 @@ async function submitRename() {
         const result = await response.json();
 
         if (result.success) {
+            // The server may sanitize file names, so show the name it actually saved
+            const savedName = result.new_path.split('/').pop();
             document.getElementById('renameModal').style.display = 'none';
-            updateRowAfterRename(filePath, result, fullNewName);
-            showToast(`Renamed ${oldName} to ${fullNewName}`);
+            updateRowAfterRename(filePath, result, savedName);
+            showToast(`Renamed ${oldName} to ${savedName}`);
         } else {
             showToast(result.error, 'error');
         }
@@ -565,7 +567,7 @@ async function submitRename() {
 }
 
 function updateRowAfterRename(oldFilePath, result, newName) {
-    const row = document.querySelector(`.rename-btn[data-filepath="${oldFilePath}"]`).closest('tr');
+    const row = document.querySelector(`.rename-btn[data-filepath="${CSS.escape(oldFilePath)}"]`).closest('tr');
     const nameEl = row.querySelector('a[style*="font-weight: 500"], span[style*="font-weight: 500"]');
     if (nameEl) {
         nameEl.textContent = newName;
@@ -759,7 +761,10 @@ function handleFileUpload(files) {
             }
         } else {
             uploadProgress.style.display = 'none';
-            showToast('❌ Upload failed: HTTP ' + xhr.status, 'error');
+            let result;
+            try { result = JSON.parse(xhr.responseText); } catch { result = null; }
+            const msg = (result && result.error) || 'HTTP ' + xhr.status;
+            showToast('❌ Upload failed: ' + msg, 'error');
         }
     });
 

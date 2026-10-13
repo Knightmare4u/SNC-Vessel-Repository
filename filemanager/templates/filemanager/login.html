@@ -155,7 +155,13 @@
                     </div>
                 {% endfor %}
             {% endif %}
-            
+
+            {% for error in form.non_field_errors %}
+                <div class="alert alert-error">
+                    {{ error }}
+                </div>
+            {% endfor %}
+
             <form method="post">
                 {% csrf_token %}
                 {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}

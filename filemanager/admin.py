@@ -1,6 +1,6 @@
+import logging
 import os
 
-from django import forms
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import User
@@ -9,22 +9,13 @@ from django.shortcuts import render
 from django.urls import path
 
 from .models import FileActivity, FolderPermission, UserProfile
-from .utils import get_storage_path
+from .utils import format_file_size, get_storage_path
 
-
-class FolderPermissionForm(forms.ModelForm):
-    class Meta:
-        model = FolderPermission
-        fields = '__all__'
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # This will be populated by JavaScript
+logger = logging.getLogger(__name__)
 
 
 class FolderPermissionInline(admin.TabularInline):
     model = FolderPermission
-    form = FolderPermissionForm
     extra = 1
     fields = ['folder_path', 'permission']
     verbose_name = "Folder Access"
@@ -58,6 +49,15 @@ class CustomUserAdmin(UserAdmin):
         'is_active',
         'userprofile__password_changed',
     ]
+    actions = ['grant_full_access', 'grant_read_access', 'reset_password_required']
+
+    def get_queryset(self, request):
+        return (
+            super()
+            .get_queryset(request)
+            .select_related('userprofile')
+            .prefetch_related('folderpermission_set')
+        )
 
     def get_urls(self):
         urls = super().get_urls()
@@ -104,32 +104,52 @@ class CustomUserAdmin(UserAdmin):
                             ),
                         }
                     )
-        except Exception as e:
-            return JsonResponse({'error': str(e)}, status=500)
+        except OSError:
+            logger.exception("Error reading folders in %s", full_path)
+            return JsonResponse({'error': 'Could not read folders'}, status=500)
 
         folders.sort(key=lambda x: x['name'].lower())
         return JsonResponse({'folders': folders})
 
+    @admin.display(boolean=True, description='Password Changed')
     def password_changed(self, obj):
         return (
             obj.userprofile.password_changed if hasattr(obj, 'userprofile') else False
         )
 
-    password_changed.boolean = True
-    password_changed.short_description = 'Password Changed'
-
+    @admin.display(description='Folder Access')
     def folder_permissions(self, obj):
-        perms = FolderPermission.objects.filter(user=obj)
+        perms = obj.folderpermission_set.all()
         return (
             ", ".join([f"{perm.folder_path} ({perm.permission})" for perm in perms])
             or "No access"
         )
 
-    folder_permissions.short_description = 'Folder Access'
+    @admin.action(description="Grant full access to root folder")
+    def grant_full_access(self, request, queryset):
+        for user in queryset:
+            FolderPermission.objects.get_or_create(
+                user=user, folder_path='/', defaults={'permission': 'admin'}
+            )
+
+    @admin.action(description="Grant read access to root folder")
+    def grant_read_access(self, request, queryset):
+        for user in queryset:
+            FolderPermission.objects.get_or_create(
+                user=user, folder_path='/', defaults={'permission': 'read'}
+            )
+
+    @admin.action(description="Force password change on next login")
+    def reset_password_required(self, request, queryset):
+        for user in queryset:
+            profile, created = UserProfile.objects.get_or_create(user=user)
+            profile.password_changed = False
+            profile.save()
 
 
 class FolderPermissionAdmin(admin.ModelAdmin):
     list_display = ['user', 'folder_path', 'permission']
+    list_select_related = ['user']
     list_filter = ['permission', 'user']
     search_fields = ['user__username', 'folder_path']
     list_editable = ['permission']
@@ -149,6 +169,7 @@ class FileActivityAdmin(admin.ModelAdmin):
         'timestamp',
         'ip_address',
     ]
+    list_select_related = ['user']
     list_filter = ['activity_type', 'timestamp', 'user']
     search_fields = ['user__username', 'filename', 'filepath']
     readonly_fields = [
@@ -161,54 +182,10 @@ class FileActivityAdmin(admin.ModelAdmin):
         'file_size',
     ]
 
+    @admin.display(description='File Size')
     def file_size_display(self, obj):
-        if obj.file_size:
-            size = obj.file_size
-            for unit in ['B', 'KB', 'MB', 'GB']:
-                if size < 1024.0:
-                    return f"{size:.2f} {unit}"
-                size /= 1024.0
-            return f"{size:.2f} TB"
-        return "-"
+        return format_file_size(obj.file_size) if obj.file_size else "-"
 
-    file_size_display.short_description = 'File Size'
-
-
-# Quick actions for admin
-def grant_full_access(modeladmin, request, queryset):
-    for user in queryset:
-        FolderPermission.objects.get_or_create(
-            user=user, folder_path='/', defaults={'permission': 'admin'}
-        )
-
-
-grant_full_access.short_description = "Grant full access to root folder"
-
-
-def grant_read_access(modeladmin, request, queryset):
-    for user in queryset:
-        FolderPermission.objects.get_or_create(
-            user=user, folder_path='/', defaults={'permission': 'read'}
-        )
-
-
-grant_read_access.short_description = "Grant read access to root folder"
-
-
-def reset_password_required(modeladmin, request, queryset):
-    for user in queryset:
-        profile, created = UserProfile.objects.get_or_create(user=user)
-        profile.password_changed = False
-        profile.save()
-
-
-reset_password_required.short_description = "Force password change on next login"
-
-CustomUserAdmin.actions = [
-    grant_full_access,
-    grant_read_access,
-    reset_password_required,
-]
 
 admin.site.unregister(User)
 admin.site.register(User, CustomUserAdmin)

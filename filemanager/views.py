@@ -14,11 +14,10 @@ import xlrd
 import zipstream
 from django.conf import settings
 from django.contrib import messages
-from django.contrib.auth import REDIRECT_FIELD_NAME, authenticate
-from django.contrib.auth import login as auth_login
 from django.contrib.auth import update_session_auth_hash
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import PasswordChangeForm
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Q
 from django.http import (
@@ -31,11 +30,9 @@ from django.http import (
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils.html import escape
-from django.utils.http import (
-    content_disposition_header,
-    url_has_allowed_host_and_scheme,
-)
+from django.utils.http import content_disposition_header
 from django.utils.text import get_valid_filename
+from django.views.decorators.http import require_POST
 from xlrd.xldate import xldate_as_datetime
 
 from .models import FileActivity, FolderPermission, UploadSession, UserProfile
@@ -48,6 +45,7 @@ from .utils import (
     log_activity,
     normalize_path,
     to_url_path,
+    validate_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,40 +111,6 @@ def get_item_urls(path, is_dir):
         'download_url': reverse('download_file', args=[url_path]),
         'preview_url': reverse('file_preview', args=[url_path]),
     }
-
-
-def custom_login(request):
-    if request.user.is_authenticated:
-        return redirect('dashboard')
-
-    if request.method == 'POST':
-        username = request.POST.get('username')
-        password = request.POST.get('password')
-        user = authenticate(request, username=username, password=password)
-
-        if user is not None:
-            auth_login(request, user)
-            profile, created = UserProfile.objects.get_or_create(user=user)
-            if not profile.password_changed:
-                return redirect('change_password')
-            next_url = request.POST.get(REDIRECT_FIELD_NAME) or request.GET.get(
-                REDIRECT_FIELD_NAME
-            )
-            if next_url and url_has_allowed_host_and_scheme(
-                next_url, allowed_hosts={request.get_host()}
-            ):
-                return redirect(next_url)
-            return redirect('dashboard')
-        else:
-            messages.error(request, 'Invalid username or password')
-
-    return render(
-        request,
-        'filemanager/login.html',
-        {
-            REDIRECT_FIELD_NAME: request.GET.get(REDIRECT_FIELD_NAME, ''),
-        },
-    )
 
 
 @login_required
@@ -267,8 +231,9 @@ def file_browser(request, folder_path=''):
                 )
                 total_size += size
                 file_count += 1
-    except Exception as e:
-        messages.error(request, f'Error accessing folder: {str(e)}')
+    except OSError:
+        logger.exception("Error accessing folder %s", full_path)
+        messages.error(request, 'Error accessing folder')
 
     # Sort: folders first, then files
     items.sort(key=lambda x: (x['type'] != 'folder', x['name'].lower()))
@@ -330,96 +295,92 @@ def download_file(request, file_path):
 
 
 @login_required
+@require_POST
 def upload_file(request):
-    if request.method == 'POST':
-        folder_path = normalize_path(request.POST.get('folder_path', ''))
+    folder_path = normalize_path(request.POST.get('folder_path', ''))
 
-        if not has_permission(request.user, folder_path, 'write'):
-            return JsonResponse({'error': 'Permission denied'}, status=403)
+    if not has_permission(request.user, folder_path, 'write'):
+        return JsonResponse({'error': 'Permission denied'}, status=403)
 
-        full_path = get_storage_path(folder_path)
+    full_path = get_storage_path(folder_path)
 
-        logger.info("Folder path: %s", folder_path)
-        logger.info("Full path: %s", full_path)
+    logger.info("Folder path: %s", folder_path)
+    logger.info("Full path: %s", full_path)
 
-        if is_in_archive(full_path):
-            return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
+    if is_in_archive(full_path):
+        return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
 
-        if not os.path.isdir(full_path):
-            return JsonResponse({'error': 'Folder not found'}, status=404)
+    if not os.path.isdir(full_path):
+        return JsonResponse({'error': 'Folder not found'}, status=404)
 
-        files = request.FILES.getlist('files')
-        uploaded_files = []
-        total_size = 0
+    files = request.FILES.getlist('files')
+    uploaded_files = []
+    total_size = 0
 
-        for file in files:
-            try:
-                filename = get_valid_filename(file.name)
+    for file in files:
+        try:
+            filename = get_valid_filename(file.name)
+            file_path = os.path.join(full_path, filename)
+
+            logger.info("Saving file: %s", file_path)
+
+            # Check if file already exists
+            counter = 1
+            name, ext = os.path.splitext(filename)
+            while os.path.exists(file_path):
+                filename = f"{name}_{counter}{ext}"
                 file_path = os.path.join(full_path, filename)
+                counter += 1
 
-                logger.info("Saving file: %s", file_path)
+            # Save file
+            logger.info("Original size: %s", file.size)
 
-                # Check if file already exists
-                counter = 1
-                name, ext = os.path.splitext(filename)
-                while os.path.exists(file_path):
-                    filename = f"{name}_{counter}{ext}"
-                    file_path = os.path.join(full_path, filename)
-                    counter += 1
+            written = 0
 
-                # Save file
-                logger.info("Original size: %s", file.size)
+            with open(file_path, "wb+") as destination:
+                for chunk in file.chunks():
+                    destination.write(chunk)
+                    written += len(chunk)
 
-                written = 0
+            logger.info("Written size: %s", written)
+            logger.info("Saved size: %s", os.path.getsize(file_path))
 
-                with open(file_path, "wb+") as destination:
-                    for chunk in file.chunks():
-                        destination.write(chunk)
-                        written += len(chunk)
+            file_size = os.path.getsize(file_path)
+            total_size += file_size
 
-                logger.info("Written size: %s", written)
-                logger.info("Saved size: %s", os.path.getsize(file_path))
+            # Log upload activity
+            relative_path = os.path.join(folder_path, filename).replace('\\', '/')
+            log_activity(
+                request.user,
+                filename,
+                relative_path,
+                'upload',
+                request.META.get('REMOTE_ADDR'),
+                file_size,
+            )
 
-                file_size = os.path.getsize(file_path)
-                total_size += file_size
+            uploaded_files.append(
+                {
+                    'name': filename,
+                    'size': file_size,
+                    'formatted_size': format_file_size(file_size),
+                }
+            )
 
-                # Log upload activity
-                relative_path = os.path.join(folder_path, filename).replace('\\', '/')
-                log_activity(
-                    request.user,
-                    filename,
-                    relative_path,
-                    'upload',
-                    request.META.get('REMOTE_ADDR'),
-                    file_size,
-                )
+            logger.info("Successfully uploaded: %s", filename)
 
-                uploaded_files.append(
-                    {
-                        'name': filename,
-                        'size': file_size,
-                        'formatted_size': format_file_size(file_size),
-                    }
-                )
+        except OSError:
+            logger.exception("Upload error for %s", file.name)
+            return JsonResponse({'error': f'Error uploading {file.name}'}, status=500)
 
-                logger.info("Successfully uploaded: %s", filename)
-
-            except Exception as e:
-                logger.exception("Upload error for %s", file.name)
-                return JsonResponse(
-                    {'error': f'Error uploading {file.name}: {str(e)}'}, status=500
-                )
-
-        return JsonResponse(
-            {
-                'success': True,
-                'uploaded_files': uploaded_files,
-                'total_size': total_size,
-                'formatted_total_size': format_file_size(total_size),
-            }
-        )
-
-    return JsonResponse({'error': 'Invalid request'}, status=400)
+    return JsonResponse(
+        {
+            'success': True,
+            'uploaded_files': uploaded_files,
+            'total_size': total_size,
+            'formatted_total_size': format_file_size(total_size),
+        }
+    )
 
 
 @login_required
@@ -445,54 +406,57 @@ def get_upload_progress(request, session_id):
 
 
 @login_required
+@require_POST
 def delete_file(request):
-    if request.method == 'POST':
+    try:
         data = json.loads(request.body)
-        item_path = normalize_path(data.get('path', ''))
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON'}, status=400)
 
-        if item_path == '/':
-            return JsonResponse({'error': 'Cannot delete the root folder'}, status=400)
+    item_path = normalize_path(data.get('path', ''))
 
-        if not has_permission(request.user, os.path.dirname(item_path), 'admin'):
-            return JsonResponse({'error': 'Permission denied'}, status=403)
+    if item_path == '/':
+        return JsonResponse({'error': 'Cannot delete the root folder'}, status=400)
 
-        full_path = get_storage_path(item_path)
+    if not has_permission(request.user, os.path.dirname(item_path), 'admin'):
+        return JsonResponse({'error': 'Permission denied'}, status=403)
 
-        if is_in_archive(full_path):
-            return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
+    full_path = get_storage_path(item_path)
 
-        try:
-            if not os.path.exists(full_path):
-                return JsonResponse({'error': 'File/folder not found'}, status=404)
+    if is_in_archive(full_path):
+        return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
 
-            file_size = os.path.getsize(full_path) if os.path.isfile(full_path) else 0
+    try:
+        if not os.path.exists(full_path):
+            return JsonResponse({'error': 'File/folder not found'}, status=404)
 
-            # Build archive destination path, mirroring the original structure
-            archive_dest = get_storage_path(item_path, root=settings.ARCHIVE_ROOT)
+        file_size = os.path.getsize(full_path) if os.path.isfile(full_path) else 0
 
-            # Avoid overwriting existing archive entries by appending a timestamp
-            if os.path.exists(archive_dest):
-                name, ext = os.path.splitext(archive_dest)
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                archive_dest = f'{name}_{timestamp}{ext}'
+        # Build archive destination path, mirroring the original structure
+        archive_dest = get_storage_path(item_path, root=settings.ARCHIVE_ROOT)
 
-            os.makedirs(os.path.dirname(archive_dest), exist_ok=True)
-            shutil.move(full_path, archive_dest)
+        # Avoid overwriting existing archive entries by appending a timestamp
+        if os.path.exists(archive_dest):
+            name, ext = os.path.splitext(archive_dest)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            archive_dest = f'{name}_{timestamp}{ext}'
 
-            log_activity(
-                request.user,
-                os.path.basename(item_path),
-                item_path,
-                'delete',
-                request.META.get('REMOTE_ADDR'),
-                file_size,
-            )
+        os.makedirs(os.path.dirname(archive_dest), exist_ok=True)
+        shutil.move(full_path, archive_dest)
 
-            return JsonResponse({'success': True})
-        except Exception as e:
-            return JsonResponse({'error': str(e)}, status=500)
+        log_activity(
+            request.user,
+            os.path.basename(item_path),
+            item_path,
+            'delete',
+            request.META.get('REMOTE_ADDR'),
+            file_size,
+        )
 
-    return JsonResponse({'error': 'Invalid request'}, status=400)
+        return JsonResponse({'success': True})
+    except OSError:
+        logger.exception("Delete failed for %s", item_path)
+        return JsonResponse({'error': 'Delete failed'}, status=500)
 
 
 @login_required
@@ -625,42 +589,45 @@ def search_files(request):
 
 
 @login_required
+@require_POST
 def create_folder(request):
-    if request.method == 'POST':
+    try:
         data = json.loads(request.body)
-        folder_path = normalize_path(data.get('folder_path', ''))
-        folder_name = data.get('folder_name', '')
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON'}, status=400)
 
-        if not has_permission(request.user, folder_path, 'write'):
-            return JsonResponse({'error': 'Permission denied'}, status=403)
+    folder_path = normalize_path(data.get('folder_path', ''))
+    folder_name = data.get('folder_name', '')
 
-        if folder_name in ('', '.', '..') or '/' in folder_name or '\\' in folder_name:
-            return JsonResponse({'error': 'Invalid folder name'}, status=400)
+    if not has_permission(request.user, folder_path, 'write'):
+        return JsonResponse({'error': 'Permission denied'}, status=403)
 
-        full_path = get_storage_path(posixpath.join(folder_path, folder_name))
+    try:
+        validate_name(folder_name)
+    except ValidationError as e:
+        return JsonResponse({'error': e.messages[0]}, status=400)
 
-        if is_in_archive(full_path):
-            return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
+    full_path = get_storage_path(posixpath.join(folder_path, folder_name))
 
-        if os.path.exists(full_path):
-            return JsonResponse(
-                {'error': 'A folder with that name already exists'}, status=400
-            )
+    if is_in_archive(full_path):
+        return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
 
-        try:
-            os.makedirs(full_path)
-            return JsonResponse({'success': True})
-        except Exception as e:
-            return JsonResponse({'error': str(e)}, status=500)
+    if os.path.exists(full_path):
+        return JsonResponse(
+            {'error': 'A folder with that name already exists'}, status=400
+        )
 
-    return JsonResponse({'error': 'Invalid request'}, status=400)
+    try:
+        os.makedirs(full_path)
+        return JsonResponse({'success': True})
+    except OSError:
+        logger.exception("Could not create folder %s", full_path)
+        return JsonResponse({'error': 'Could not create folder'}, status=500)
 
 
 @login_required
+@require_POST
 def rename_file(request):
-    if request.method != 'POST':
-        return JsonResponse({'error': 'Invalid request'}, status=400)
-
     try:
         data = json.loads(request.body)
     except json.JSONDecodeError:
@@ -680,10 +647,18 @@ def rename_file(request):
     if not has_permission(request.user, folder, 'write'):
         return JsonResponse({'error': 'Permission denied'}, status=403)
 
-    new_name = get_valid_filename(new_name)
-    new_path = posixpath.join(folder, new_name)
-
     full_old_path = get_storage_path(old_path)
+
+    # Folders keep the user's name; files are sanitized like uploads
+    if os.path.isdir(full_old_path):
+        try:
+            validate_name(new_name)
+        except ValidationError as e:
+            return JsonResponse({'error': e.messages[0]}, status=400)
+    else:
+        new_name = get_valid_filename(new_name)
+
+    new_path = posixpath.join(folder, new_name)
     full_new_path = get_storage_path(new_path)
 
     if is_in_archive(full_old_path) or is_in_archive(full_new_path):
@@ -752,15 +727,14 @@ def rename_file(request):
             }
         )
 
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
+    except OSError:
+        logger.exception("Rename failed for %s", old_path)
+        return JsonResponse({'error': 'Rename failed'}, status=500)
 
 
 @login_required
+@require_POST
 def bulk_download(request):
-    if request.method != 'POST':
-        return JsonResponse({'error': 'Invalid request'}, status=400)
-
     file_paths = request.POST.getlist('paths')
 
     if not file_paths:
@@ -812,10 +786,13 @@ def bulk_download(request):
 
 RANGE_HEADER_RE = re.compile(r'bytes=(\d*)-(\d*)')
 
-# Previewed user content gets a sandbox CSP so it cannot run scripts on this
-# site's origin. PDF is exempt: browsers' built-in PDF viewers refuse to render
-# in a sandboxed document.
-SANDBOX_EXEMPT_CONTENT_TYPES = {'application/pdf'}
+
+def needs_sandbox(content_type):
+    """Previewed user content gets a sandbox CSP so it cannot run scripts on this
+    site's origin. PDF, video and audio are exempt: they cannot run scripts, and
+    browsers' built-in viewers/players stop working in a sandboxed document."""
+    mime = content_type.split(';')[0]
+    return mime != 'application/pdf' and not mime.startswith(('video/', 'audio/'))
 
 
 def _iter_file_chunk(f, length, chunk_size=8192):
@@ -955,7 +932,7 @@ def file_preview(request, file_path):
         response = FileResponse(open(full_path, 'rb'), content_type=content_type)
 
     response['Accept-Ranges'] = 'bytes'
-    if content_type.split(';')[0] not in SANDBOX_EXEMPT_CONTENT_TYPES:
+    if needs_sandbox(content_type):
         response['Content-Security-Policy'] = 'sandbox'
     disposition = content_disposition_header(False, os.path.basename(file_path))
     if disposition:

@@ -4,7 +4,14 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
-    path('', views.custom_login, name='login'),
+    path(
+        '',
+        auth_views.LoginView.as_view(
+            template_name='filemanager/login.html',
+            redirect_authenticated_user=True,
+        ),
+        name='login',
+    ),
     path(
         'logout/',
         auth_views.LogoutView.as_view(template_name='filemanager/logout.html'),
