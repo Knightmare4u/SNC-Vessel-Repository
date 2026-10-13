@@ -1,17 +1,15 @@
-import json
 import os
 
 from django import forms
-from django.conf import settings
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import User
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.urls import path
-from django.utils.html import format_html
 
 from .models import FileActivity, FolderPermission, UserProfile
+from .utils import get_storage_path
 
 
 class FolderPermissionForm(forms.ModelForm):
@@ -83,10 +81,9 @@ class CustomUserAdmin(UserAdmin):
 
     def get_folders(self, request):
         """API endpoint to get folders"""
-        base_path = settings.FILE_STORAGE_ROOT
         folder_path = request.GET.get('path', '')
 
-        full_path = os.path.join(base_path, folder_path)
+        full_path = get_storage_path(folder_path)
 
         if not os.path.exists(full_path):
             return JsonResponse({'error': 'Path does not exist'}, status=404)

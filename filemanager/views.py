@@ -1,13 +1,10 @@
-import io
 import json
 import logging
 import mimetypes
 import os
+import posixpath
 import re
 import shutil
-import urllib.parse
-import uuid
-import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -17,9 +14,7 @@ import xlrd
 import zipstream
 from django.conf import settings
 from django.contrib import messages
-from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth import REDIRECT_FIELD_NAME, authenticate
-from django.contrib.auth import login
 from django.contrib.auth import login as auth_login
 from django.contrib.auth import update_session_auth_hash
 from django.contrib.auth.decorators import login_required
@@ -32,7 +27,7 @@ from django.http import (
     JsonResponse,
     StreamingHttpResponse,
 )
-from django.shortcuts import get_object_or_404, redirect, render
+from django.shortcuts import redirect, render
 from django.utils.html import escape
 from django.utils.http import (
     content_disposition_header,
@@ -44,9 +39,11 @@ from xlrd.xldate import xldate_as_datetime
 from .models import FileActivity, FolderPermission, UploadSession, UserProfile
 from .utils import (
     format_file_size,
+    get_storage_path,
     get_user_permissions,
     has_permission,
     log_activity,
+    normalize_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -194,8 +191,7 @@ def file_browser(request, folder_path=''):
         messages.error(request, 'You do not have permission to access this folder')
         return redirect('dashboard')
 
-    base_path = settings.FILE_STORAGE_ROOT
-    full_path = os.path.join(base_path, folder_path.lstrip('/'))
+    full_path = get_storage_path(folder_path)
 
     archive_path = Path(settings.ARCHIVE_ROOT)
     full_path_obj = Path(full_path)
@@ -286,11 +282,11 @@ def file_browser(request, folder_path=''):
 
 @login_required
 def download_file(request, file_path):
+    file_path = normalize_path(file_path)
     if not has_permission(request.user, os.path.dirname(file_path), 'read'):
         return JsonResponse({'error': 'Permission denied'}, status=403)
 
-    base_path = settings.FILE_STORAGE_ROOT
-    full_path = os.path.join(base_path, file_path.lstrip('/'))
+    full_path = get_storage_path(file_path)
 
     if os.path.exists(full_path) and os.path.isfile(full_path):
         # Log download activity
@@ -318,18 +314,13 @@ def download_file(request, file_path):
 @login_required
 def upload_file(request):
     if request.method == 'POST':
-        folder_path = request.POST.get('folder_path', '')
+        folder_path = normalize_path(request.POST.get('folder_path', ''))
 
         if not has_permission(request.user, folder_path, 'write'):
             return JsonResponse({'error': 'Permission denied'}, status=403)
 
-        base_path = settings.FILE_STORAGE_ROOT
-        # Normalize path for Windows
-        if folder_path.startswith('/'):
-            folder_path = folder_path[1:]
-        full_path = os.path.join(base_path, folder_path)
+        full_path = get_storage_path(folder_path)
 
-        logger.info("Base path: %s", base_path)
         logger.info("Folder path: %s", folder_path)
         logger.info("Full path: %s", full_path)
 
@@ -432,61 +423,19 @@ def get_upload_progress(request, session_id):
         return JsonResponse({'error': 'Session not found'}, status=404)
 
 
-# @login_required
-# def delete_file(request):
-#     if request.method == 'POST':
-#         data = json.loads(request.body)
-#         item_path = data.get('path', '')
-#
-#         if not has_permission(request.user, os.path.dirname(item_path), 'admin'):
-#             return JsonResponse({'error': 'Permission denied'}, status=403)
-#
-#         base_path = settings.FILE_STORAGE_ROOT
-#         full_path = os.path.join(base_path, item_path.lstrip('/'))
-#
-#         try:
-#             if os.path.exists(full_path):
-#                 if os.path.isdir(full_path):
-#                     # Check if folder is empty
-#                     if len(os.listdir(full_path)) > 0:
-#                         return JsonResponse(
-#                             {'error': 'Folder is not empty'}, status=400
-#                         )
-#                     os.rmdir(full_path)
-#                 else:
-#                     file_size = os.path.getsize(full_path)
-#                     os.remove(full_path)
-#
-#                 # Log delete activity
-#                 log_activity(
-#                     request.user,
-#                     os.path.basename(item_path),
-#                     item_path,
-#                     'delete',
-#                     request.META.get('REMOTE_ADDR'),
-#                     file_size if not os.path.isdir(full_path) else 0,
-#                 )
-#
-#                 return JsonResponse({'success': True})
-#             else:
-#                 return JsonResponse({'error': 'File/folder not found'}, status=404)
-#         except Exception as e:
-#             return JsonResponse({'error': str(e)}, status=500)
-#
-#     return JsonResponse({'error': 'Invalid request'}, status=400)
-
-
 @login_required
 def delete_file(request):
     if request.method == 'POST':
         data = json.loads(request.body)
-        item_path = data.get('path', '')
+        item_path = normalize_path(data.get('path', ''))
+
+        if item_path == '/':
+            return JsonResponse({'error': 'Cannot delete the root folder'}, status=400)
 
         if not has_permission(request.user, os.path.dirname(item_path), 'admin'):
             return JsonResponse({'error': 'Permission denied'}, status=403)
 
-        base_path = settings.FILE_STORAGE_ROOT
-        full_path = os.path.join(base_path, item_path.lstrip('/'))
+        full_path = get_storage_path(item_path)
 
         try:
             if not os.path.exists(full_path):
@@ -495,8 +444,7 @@ def delete_file(request):
             file_size = os.path.getsize(full_path) if os.path.isfile(full_path) else 0
 
             # Build archive destination path, mirroring the original structure
-            archive_root = str(settings.ARCHIVE_ROOT)
-            archive_dest = os.path.join(archive_root, item_path.lstrip('/'))
+            archive_dest = get_storage_path(item_path, root=settings.ARCHIVE_ROOT)
 
             # Avoid overwriting existing archive entries by appending a timestamp
             if os.path.exists(archive_dest):
@@ -615,30 +563,12 @@ def search_files(request):
     # Search within a specific folder
     # -------------------------
     if folder_filter:
-        folder = folder_filter.rstrip('/')
+        folder = normalize_path(folder_filter)
 
-        target_path = safe_join(base_path, folder)
-
-        if not target_path:
-            return JsonResponse({'error': 'Invalid path'}, status=400)
-
-        can_access = request.user.is_superuser
-
-        if not can_access:
-            for perm in user_permissions:
-                if perm['permission'] not in ['read', 'write', 'admin']:
-                    continue
-
-                perm_path = perm['folder_path'].rstrip('/')
-
-                if folder == perm_path or folder.startswith(perm_path + '/'):
-                    can_access = True
-                    break
-
-        if not can_access:
+        if not has_permission(request.user, folder, 'read'):
             return JsonResponse({'error': 'Permission denied'}, status=403)
 
-        collect_results(target_path)
+        collect_results(get_storage_path(folder))
 
     # -------------------------
     # Search across all permitted folders
@@ -673,14 +603,16 @@ def search_files(request):
 def create_folder(request):
     if request.method == 'POST':
         data = json.loads(request.body)
-        folder_path = data.get('folder_path', '')
+        folder_path = normalize_path(data.get('folder_path', ''))
         folder_name = data.get('folder_name', '')
 
         if not has_permission(request.user, folder_path, 'write'):
             return JsonResponse({'error': 'Permission denied'}, status=403)
 
-        base_path = settings.FILE_STORAGE_ROOT
-        full_path = os.path.join(base_path, folder_path.lstrip('/'), folder_name)
+        if folder_name in ('', '.', '..') or '/' in folder_name or '\\' in folder_name:
+            return JsonResponse({'error': 'Invalid folder name'}, status=400)
+
+        full_path = get_storage_path(posixpath.join(folder_path, folder_name))
 
         if os.path.exists(full_path):
             return JsonResponse(
@@ -706,10 +638,10 @@ def rename_file(request):
     except json.JSONDecodeError:
         return JsonResponse({'error': 'Invalid JSON'}, status=400)
 
-    old_path = data.get('old_path', '')
+    old_path = normalize_path(data.get('old_path', ''))
     new_name = data.get('new_name', '').strip()
 
-    if not old_path:
+    if old_path == '/':
         return JsonResponse({'error': 'Old path is required'}, status=400)
 
     if not new_name:
@@ -721,11 +653,10 @@ def rename_file(request):
         return JsonResponse({'error': 'Permission denied'}, status=403)
 
     new_name = get_valid_filename(new_name)
-    new_path = os.path.join(folder, new_name).replace('\\', '/')
+    new_path = posixpath.join(folder, new_name)
 
-    base_path = settings.FILE_STORAGE_ROOT
-    full_old_path = os.path.join(base_path, old_path.lstrip('/'))
-    full_new_path = os.path.join(base_path, new_path.lstrip('/'))
+    full_old_path = get_storage_path(old_path)
+    full_new_path = get_storage_path(new_path)
 
     if not os.path.exists(full_old_path):
         return JsonResponse({'error': 'File/Folder not found'}, status=404)
@@ -741,11 +672,12 @@ def rename_file(request):
     try:
         with transaction.atomic():
             if os.path.isdir(full_old_path):
-                old_folder_path = '/' + old_path.lstrip('/')
-                new_folder_path = '/' + new_path.lstrip('/')
+                old_folder_path = old_path
+                new_folder_path = new_path
 
                 permissions = FolderPermission.objects.select_for_update().filter(
-                    folder_path__startswith=old_folder_path
+                    Q(folder_path=old_folder_path)
+                    | Q(folder_path__startswith=old_folder_path + '/')
                 )
 
                 perms_to_update = []
@@ -782,60 +714,6 @@ def rename_file(request):
         return JsonResponse({'error': str(e)}, status=500)
 
 
-# @login_required
-# def bulk_download(request):
-#     if request.method != 'POST':
-#         return JsonResponse({'error': 'Invalid request'}, status=400)
-
-#     file_paths = request.POST.getlist('paths')
-
-#     if not file_paths:
-#         return JsonResponse({'error': 'No files selected'}, status=400)
-
-#     base_path = settings.FILE_STORAGE_ROOT
-#     buffer = io.BytesIO()
-
-#     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as zf:
-#         for file_path in file_paths:
-#             if not has_permission(
-#                 request.user, os.path.dirname(file_path.rstrip('/\\')), 'read'
-#             ):
-#                 continue
-#             full_path = os.path.join(base_path, file_path.lstrip('/'))
-#             if not os.path.abspath(full_path).startswith(os.path.abspath(base_path)):
-#                 continue
-#             if os.path.isfile(full_path):
-#                 zf.write(full_path, os.path.basename(full_path))
-#                 log_activity(
-#                     request.user,
-#                     os.path.basename(file_path),
-#                     file_path,
-#                     'download',
-#                     request.META.get('REMOTE_ADDR'),
-#                     os.path.getsize(full_path),
-#                 )
-#             elif os.path.isdir(full_path):
-#                 parent_path = os.path.dirname(full_path.rstrip('/\\'))
-#                 for root, _, files in os.walk(full_path):
-#                     for filename in files:
-#                         file_full = os.path.join(root, filename)
-#                         arcname = os.path.relpath(file_full, parent_path)
-#                         zf.write(file_full, arcname)
-#                         log_activity(
-#                             request.user,
-#                             filename,
-#                             os.path.relpath(file_full, base_path),
-#                             'download',
-#                             request.META.get('REMOTE_ADDR'),
-#                             os.path.getsize(file_full),
-#                         )
-
-#     buffer.seek(0)
-#     response = HttpResponse(buffer.read(), content_type='application/zip')
-#     response['Content-Disposition'] = 'attachment; filename="download.zip"'
-#     return response
-
-
 @login_required
 def bulk_download(request):
     if request.method != 'POST':
@@ -847,25 +725,14 @@ def bulk_download(request):
         return JsonResponse({'error': 'No files selected'}, status=400)
 
     base_path = settings.FILE_STORAGE_ROOT
-    base_path_abs = os.path.abspath(base_path)
+    file_paths = [normalize_path(p) for p in file_paths]
     zs = zipstream.ZipStream()
     total_size = 0
 
     for file_path in file_paths:
-        if not has_permission(
-            request.user, os.path.dirname(file_path.rstrip('/\\')), 'read'
-        ):
+        if not has_permission(request.user, os.path.dirname(file_path), 'read'):
             continue
-        full_path = os.path.join(base_path, file_path.lstrip('/'))
-        full_path_abs = os.path.abspath(full_path)
-        try:
-            within_base = (
-                os.path.commonpath([base_path_abs, full_path_abs]) == base_path_abs
-            )
-        except ValueError:
-            within_base = False
-        if not within_base:
-            continue
+        full_path = get_storage_path(file_path)
         if os.path.isfile(full_path):
             zs.add_path(full_path, arcname=os.path.relpath(full_path, base_path))
             total_size += os.path.getsize(full_path)
@@ -901,40 +768,6 @@ def bulk_download(request):
     return response
 
 
-# @login_required
-# def file_preview(request, file_path):
-#     if not has_permission(request.user, os.path.dirname(file_path), 'read'):
-#         return JsonResponse({'error': 'Permission denied'}, status=403)
-#
-#     base_path = settings.FILE_STORAGE_ROOT
-#     full_path = os.path.join(base_path, file_path.lstrip('/'))
-#
-#     if os.path.exists(full_path) and os.path.isfile(full_path):
-#         # Log view activity
-#         log_activity(
-#             request.user,
-#             os.path.basename(file_path),
-#             file_path,
-#             'view',
-#             request.META.get('REMOTE_ADDR'),
-#             os.path.getsize(full_path),
-#         )
-#
-#         # For now, just return file info. You can extend this for actual previews
-#         file_info = {
-#             'name': os.path.basename(file_path),
-#             'path': file_path,
-#             'size': os.path.getsize(full_path),
-#             'formatted_size': format_file_size(os.path.getsize(full_path)),
-#             'modified': os.path.getmtime(full_path),
-#             'extension': os.path.splitext(file_path)[1].lower(),
-#         }
-#
-#         return JsonResponse({'file': file_info})
-#
-#     return JsonResponse({'error': 'File not found'}, status=404)
-
-
 RANGE_HEADER_RE = re.compile(r'bytes=(\d*)-(\d*)')
 
 
@@ -966,11 +799,11 @@ def file_preview(request, file_path):
             f'<{tag}>{escape(cell) if cell is not None else ""}</{tag}>' for cell in row
         )
 
+    file_path = normalize_path(file_path)
     if not has_permission(request.user, os.path.dirname(file_path), 'read'):
         return JsonResponse({'error': 'Permission denied'}, status=403)
 
-    base_path = settings.FILE_STORAGE_ROOT
-    full_path = os.path.join(base_path, file_path.lstrip('/'))
+    full_path = get_storage_path(file_path)
 
     if not os.path.exists(full_path) or not os.path.isfile(full_path):
         return JsonResponse({'error': 'File not found'}, status=404)
@@ -1085,72 +918,3 @@ def file_preview(request, file_path):
     )
 
     return response
-
-
-@staff_member_required
-def admin_folder_browser(request):
-    """Admin view to browse folders for permission assignment"""
-    base_path = settings.FILE_STORAGE_ROOT
-    folder_path = request.GET.get('path', '')
-
-    full_path = os.path.join(base_path, folder_path)
-
-    if not os.path.exists(full_path):
-        return JsonResponse({'error': 'Path does not exist'}, status=404)
-
-    folders = []
-    try:
-        for item in os.listdir(full_path):
-            item_path = os.path.join(full_path, item)
-            if os.path.isdir(item_path):
-                rel_path = os.path.join(folder_path, item).replace('\\', '/')
-                folders.append(
-                    {
-                        'name': item,
-                        'path': rel_path,
-                        'has_children': any(
-                            os.path.isdir(os.path.join(item_path, subitem))
-                            for subitem in os.listdir(item_path)
-                            if os.path.isdir(os.path.join(item_path, subitem))
-                        ),
-                    }
-                )
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
-
-    # Sort folders alphabetically
-    folders.sort(key=lambda x: x['name'].lower())
-
-    return JsonResponse({'folders': folders})
-
-
-@staff_member_required
-def admin_get_folder_tree(request):
-    """Get complete folder tree for admin panel"""
-    base_path = settings.FILE_STORAGE_ROOT
-
-    def build_tree(current_path):
-        tree = []
-        full_path = os.path.join(base_path, current_path.lstrip('/'))
-
-        if not os.path.exists(full_path):
-            return tree
-
-        try:
-            for item in os.listdir(full_path):
-                item_path = os.path.join(full_path, item)
-                if os.path.isdir(item_path):
-                    rel_path = os.path.join(current_path, item).replace('\\', '/')
-                    node = {
-                        'name': item,
-                        'path': rel_path,
-                        'children': build_tree(rel_path),
-                    }
-                    tree.append(node)
-        except Exception:
-            logger.exception("Error reading directory %s", full_path)
-
-        return tree
-
-    tree = build_tree('')
-    return JsonResponse({'tree': tree})

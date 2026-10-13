@@ -27,9 +27,4 @@ urlpatterns = [
     path('delete/', views.delete_file, name='delete_file'),
     path('search/', views.search_files, name='search_files'),
     path('create-folder/', views.create_folder, name='create_folder'),
-    # Admin folder browser
-    path(
-        'admin/folder-browser/', views.admin_folder_browser, name='admin_folder_browser'
-    ),
-    path('admin/get-folders/', views.admin_get_folder_tree, name='admin_get_folders'),
 ]

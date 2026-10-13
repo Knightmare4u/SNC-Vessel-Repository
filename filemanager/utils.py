@@ -1,8 +1,30 @@
 import os
+import posixpath
+from pathlib import PurePosixPath
 
 from django.conf import settings
+from django.core.files.storage import FileSystemStorage
 
 from .models import FileActivity, FolderPermission
+
+PERMISSION_LEVELS = {
+    'read': ('read', 'write', 'admin'),
+    'write': ('write', 'admin'),
+    'admin': ('admin',),
+}
+PERMISSION_RANK = {'read': 1, 'write': 2, 'admin': 3}
+
+
+def normalize_path(path):
+    """Return a canonical storage path: leading '/', no trailing '/', no '..'."""
+    path = (path or '').replace('\\', '/').lstrip('/')
+    return posixpath.normpath('/' + path)
+
+
+def get_storage_path(rel_path, root=None):
+    """Map a storage path to an absolute filesystem path inside root."""
+    storage = FileSystemStorage(location=root or settings.FILE_STORAGE_ROOT)
+    return storage.path(normalize_path(rel_path).lstrip('/'))
 
 
 def get_user_permissions(user):
@@ -20,18 +42,19 @@ def has_permission(user, folder_path, required_permission):
     if user.is_superuser:
         return True
 
-    permissions = get_user_permissions(user)
+    folder = PurePosixPath(normalize_path(folder_path))
+    best = None
 
-    for perm in permissions:
-        if folder_path.startswith(perm['folder_path']) or perm['folder_path'] == '/':
-            if required_permission == 'read':
-                return perm['permission'] in ['read', 'write', 'admin']
-            elif required_permission == 'write':
-                return perm['permission'] in ['write', 'admin']
-            elif required_permission == 'admin':
-                return perm['permission'] == 'admin'
+    # Permissions are additive: use the highest grant covering this folder
+    for perm in get_user_permissions(user):
+        if folder.is_relative_to(normalize_path(perm['folder_path'])):
+            if (
+                best is None
+                or PERMISSION_RANK[perm['permission']] > PERMISSION_RANK[best]
+            ):
+                best = perm['permission']
 
-    return False
+    return best in PERMISSION_LEVELS[required_permission]
 
 
 def log_activity(user, filename, filepath, activity_type, ip_address, file_size=None):
