@@ -1,6 +1,6 @@
 import os
 import posixpath
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from django.conf import settings
 from django.core.files.storage import FileSystemStorage
@@ -30,6 +30,12 @@ def get_storage_path(rel_path, root=None):
     """Map a storage path to an absolute filesystem path inside root."""
     storage = FileSystemStorage(location=root or settings.FILE_STORAGE_ROOT)
     return storage.path(to_url_path(rel_path))
+
+
+def is_in_archive(full_path):
+    """True if full_path is the archive folder itself or anything inside it."""
+    archive_root = os.path.abspath(settings.ARCHIVE_ROOT)
+    return Path(os.path.abspath(full_path)).is_relative_to(archive_root)
 
 
 def get_user_permissions(user):

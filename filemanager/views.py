@@ -44,12 +44,15 @@ from .utils import (
     get_storage_path,
     get_user_permissions,
     has_permission,
+    is_in_archive,
     log_activity,
     normalize_path,
     to_url_path,
 )
 
 logger = logging.getLogger(__name__)
+
+ARCHIVE_READ_ONLY = 'The archive is read-only'
 
 FILE_TYPE_CATEGORIES = {
     'document': ['.doc', '.docx', '.txt'],
@@ -209,10 +212,7 @@ def file_browser(request, folder_path=''):
     full_path = get_storage_path(folder_path)
 
     archive_path = Path(settings.ARCHIVE_ROOT)
-    full_path_obj = Path(full_path)
-    in_archive = full_path_obj == archive_path or full_path_obj.is_relative_to(
-        archive_path
-    )
+    in_archive = is_in_archive(full_path)
 
     if not folder_path:
         # Storage root may not exist yet on a fresh deployment
@@ -342,6 +342,9 @@ def upload_file(request):
         logger.info("Folder path: %s", folder_path)
         logger.info("Full path: %s", full_path)
 
+        if is_in_archive(full_path):
+            return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
+
         if not os.path.isdir(full_path):
             return JsonResponse({'error': 'Folder not found'}, status=404)
 
@@ -454,6 +457,9 @@ def delete_file(request):
             return JsonResponse({'error': 'Permission denied'}, status=403)
 
         full_path = get_storage_path(item_path)
+
+        if is_in_archive(full_path):
+            return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
 
         try:
             if not os.path.exists(full_path):
@@ -633,6 +639,9 @@ def create_folder(request):
 
         full_path = get_storage_path(posixpath.join(folder_path, folder_name))
 
+        if is_in_archive(full_path):
+            return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
+
         if os.path.exists(full_path):
             return JsonResponse(
                 {'error': 'A folder with that name already exists'}, status=400
@@ -676,6 +685,9 @@ def rename_file(request):
 
     full_old_path = get_storage_path(old_path)
     full_new_path = get_storage_path(new_path)
+
+    if is_in_archive(full_old_path) or is_in_archive(full_new_path):
+        return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
 
     if not os.path.exists(full_old_path):
         return JsonResponse({'error': 'File/Folder not found'}, status=404)
@@ -800,6 +812,11 @@ def bulk_download(request):
 
 RANGE_HEADER_RE = re.compile(r'bytes=(\d*)-(\d*)')
 
+# Previewed user content gets a sandbox CSP so it cannot run scripts on this
+# site's origin. PDF is exempt: browsers' built-in PDF viewers refuse to render
+# in a sandboxed document.
+SANDBOX_EXEMPT_CONTENT_TYPES = {'application/pdf'}
+
 
 def _iter_file_chunk(f, length, chunk_size=8192):
     remaining = length
@@ -847,7 +864,9 @@ def file_preview(request, file_path):
             '<style>body{font-family:sans-serif;max-width:900px;margin:40px auto;padding:0 20px}</style>'
             f'</head><body>{result.value}</body></html>'
         )
-        return HttpResponse(html, content_type='text/html; charset=utf-8')
+        response = HttpResponse(html, content_type='text/html; charset=utf-8')
+        response['Content-Security-Policy'] = 'sandbox'
+        return response
 
     if ext in ('.xlsx', '.xls'):
         sheets_html = []
@@ -895,7 +914,9 @@ def file_preview(request, file_path):
             f'{"".join(sheets_html)}'
             '</body></html>'
         )
-        return HttpResponse(html, content_type='text/html; charset=utf-8')
+        response = HttpResponse(html, content_type='text/html; charset=utf-8')
+        response['Content-Security-Policy'] = 'sandbox'
+        return response
 
     content_type, _ = mimetypes.guess_type(full_path)
     if ext in ('.csv', '.tsv', '.log', '.md'):
@@ -934,6 +955,8 @@ def file_preview(request, file_path):
         response = FileResponse(open(full_path, 'rb'), content_type=content_type)
 
     response['Accept-Ranges'] = 'bytes'
+    if content_type.split(';')[0] not in SANDBOX_EXEMPT_CONTENT_TYPES:
+        response['Content-Security-Policy'] = 'sandbox'
     disposition = content_disposition_header(False, os.path.basename(file_path))
     if disposition:
         response['Content-Disposition'] = disposition
