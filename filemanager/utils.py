@@ -21,10 +21,15 @@ def normalize_path(path):
     return posixpath.normpath('/' + path)
 
 
+def to_url_path(path):
+    """Return the storage path without a leading '/' for use in URLs ('' = root)."""
+    return normalize_path(path).lstrip('/')
+
+
 def get_storage_path(rel_path, root=None):
     """Map a storage path to an absolute filesystem path inside root."""
     storage = FileSystemStorage(location=root or settings.FILE_STORAGE_ROOT)
-    return storage.path(normalize_path(rel_path).lstrip('/'))
+    return storage.path(to_url_path(rel_path))
 
 
 def get_user_permissions(user):

@@ -28,7 +28,7 @@
             {% if accessible_folders %}
                 <div style="display: flex; flex-direction: column; gap: 0.5rem;">
                     {% for folder in accessible_folders %}
-                    <a href="{% url 'file_browser' folder.path %}"
+                    <a href="{% if folder.path %}{% url 'file_browser' folder.path %}{% else %}{% url 'file_browser' %}{% endif %}"
                        class="btn btn-secondary"
                        style="text-align: left; display: flex; justify-content: space-between;">
                         <span>📁 {{ folder.name }}</span>

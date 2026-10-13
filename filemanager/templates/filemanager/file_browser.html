@@ -221,9 +221,11 @@
                                           data-filepath="{{ item.path }}"
                                           data-filename="{{ item.name }}"
                                           data-extension="{{ item.extension }}"
+                                          data-preview-url="{% url 'file_preview' item.path %}"
+                                          data-download-url="{% url 'download_file' item.path %}"
                                           onmouseover="this.style.textDecoration='underline'"
                                           onmouseout="this.style.textDecoration='none'"
-                                          onclick="event.stopPropagation(); handlePreview(this.dataset.filepath, this.dataset.filename, this.dataset.extension)">
+                                          onclick="event.stopPropagation(); handlePreview(this.dataset.previewUrl, this.dataset.downloadUrl, this.dataset.filename, this.dataset.extension)">
                                         {{ item.name }}
                                     </span>
                                 {% endif %}
@@ -251,11 +253,13 @@
                             {% if item.type == 'file' %}
                                 <button class="btn btn-secondary btn-sm download-btn"
                                         data-filepath="{{ item.path }}"
+                                        data-download-url="{% url 'download_file' item.path %}"
                                         title="Download">
                                     ⬇️
                                 </button>
                                 <button class="btn btn-sm copy-link-btn"
                                         data-filepath="{{ item.path }}"
+                                        data-download-url="{% url 'download_file' item.path %}"
                                         title="Copy Download Link">
                                     🔗
                                 </button>
@@ -267,6 +271,7 @@
                                 </a>
                                 <button class="btn btn-sm copy-link-btn copy-folder-link-btn"
                                         data-filepath="{{ item.path }}"
+                                        data-url="{% url 'file_browser' item.path %}"
                                         title="Copy Folder Link">
                                     🔗
                                 </button>
@@ -445,14 +450,11 @@ document.addEventListener('DOMContentLoaded', function() {
     // File action handlers
     document.addEventListener('click', function(e) {
         if (e.target.classList.contains('download-btn')) {
-            const filePath = e.target.dataset.filepath;
-            downloadFile(filePath);
+            downloadFile(e.target.dataset.downloadUrl);
         } else if (e.target.classList.contains('copy-folder-link-btn')) {
-            const folderPath = e.target.dataset.filepath;
-            copyFolderLink(e.target, folderPath);
+            copyFolderLink(e.target, e.target.dataset.url);
         } else if (e.target.classList.contains('copy-link-btn')) {
-            const filePath = e.target.dataset.filepath;
-            copyDownloadLink(e.target, filePath);
+            copyDownloadLink(e.target, e.target.dataset.downloadUrl);
         } else if (e.target.classList.contains('rename-btn')) {
             const filePath = e.target.dataset.filepath;
             const fileName = e.target.dataset.filename;
@@ -542,7 +544,7 @@ async function submitRename() {
     }
 
     try {
-        const response = await fetch('/rename/', {
+        const response = await fetch("{% url 'rename_file' %}", {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCSRFToken() },
             body: JSON.stringify({ old_path: filePath, new_name: fullNewName })
@@ -552,7 +554,7 @@ async function submitRename() {
 
         if (result.success) {
             document.getElementById('renameModal').style.display = 'none';
-            updateRowAfterRename(filePath, result.new_path, fullNewName, result.modified);
+            updateRowAfterRename(filePath, result, fullNewName);
             showToast(`Renamed ${oldName} to ${fullNewName}`);
         } else {
             showToast(result.error, 'error');
@@ -562,22 +564,24 @@ async function submitRename() {
     }
 }
 
-function updateRowAfterRename(oldFilePath, newFilePath, newName, modified) {
+function updateRowAfterRename(oldFilePath, result, newName) {
     const row = document.querySelector(`.rename-btn[data-filepath="${oldFilePath}"]`).closest('tr');
     const nameEl = row.querySelector('a[style*="font-weight: 500"], span[style*="font-weight: 500"]');
     if (nameEl) {
         nameEl.textContent = newName;
         if (nameEl.tagName === 'A') {
-            const newUrl = `/browser/${newFilePath}/`;
-            nameEl.href = newUrl;
+            nameEl.href = result.browser_url;
             const openBtn = row.querySelector('a[title="Open Folder"]');
-            if (openBtn) openBtn.href = newUrl;
+            if (openBtn) openBtn.href = result.browser_url;
         }
     }
     row.dataset.name = newName.toLowerCase();
-    if (modified) row.querySelectorAll('td')[3].textContent = modified;
-    row.querySelectorAll('[data-filepath]').forEach(el => el.dataset.filepath = newFilePath);
+    if (result.modified) row.querySelectorAll('td')[3].textContent = result.modified;
+    row.querySelectorAll('[data-filepath]').forEach(el => el.dataset.filepath = result.new_path);
     row.querySelectorAll('[data-filename]').forEach(el => el.dataset.filename = newName);
+    row.querySelectorAll('[data-url]').forEach(el => el.dataset.url = result.browser_url);
+    row.querySelectorAll('[data-download-url]').forEach(el => el.dataset.downloadUrl = result.download_url);
+    row.querySelectorAll('[data-preview-url]').forEach(el => el.dataset.previewUrl = result.preview_url);
 }
 
 async function createFolder() {
@@ -590,7 +594,7 @@ async function createFolder() {
     }
 
     try {
-        const response = await fetch('/create-folder/', {
+        const response = await fetch("{% url 'create_folder' %}", {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -620,7 +624,7 @@ async function deleteFile(filePath, fileName) {
     }
 
     try {
-        const response = await fetch('/delete/', {
+        const response = await fetch("{% url 'delete_file' %}", {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -643,8 +647,8 @@ async function deleteFile(filePath, fileName) {
     }
 }
 
-function downloadFile(filePath) {
-    window.open(`/download/${filePath}/`, '_blank');
+function downloadFile(downloadUrl) {
+    window.open(downloadUrl, '_blank');
 }
 
 function showToast(message, type = 'default') {
@@ -655,8 +659,8 @@ function showToast(message, type = 'default') {
     setTimeout(() => toast.classList.remove('show'), 3500);
 }
 
-function copyDownloadLink(btn, filePath) {
-    const url = `${window.location.origin}/download/${filePath}/`;
+function copyDownloadLink(btn, downloadUrl) {
+    const url = new URL(downloadUrl, window.location.origin).href;
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(url).then(() => {
             showToast('🔗 Link copied to clipboard!');
@@ -675,8 +679,8 @@ function copyDownloadLink(btn, filePath) {
     }
 }
 
-function copyFolderLink(btn, folderPath) {
-    const url = `${window.location.origin}/browser/${folderPath}/`;
+function copyFolderLink(btn, folderUrl) {
+    const url = new URL(folderUrl, window.location.origin).href;
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(url).then(() => {
             showToast('🔗 Folder link copied to clipboard!');
@@ -764,7 +768,7 @@ function handleFileUpload(files) {
         showToast('❌ Upload failed: ', 'error');
     });
 
-    xhr.open('POST', '/upload/');
+    xhr.open('POST', "{% url 'upload_file' %}");
     xhr.setRequestHeader('X-CSRFToken', getCSRFToken());
     xhr.send(formData);
 }
@@ -779,17 +783,17 @@ const PREVIEWABLE_EXTS = new Set([
     '.xls','.xlsx',
 ]);
 
-function handlePreview(filePath, fileName, ext) {
+function handlePreview(previewUrl, downloadUrl, fileName, ext) {
     const extension = (ext || '.' + fileName.split('.').pop()).toLowerCase();
     if (PREVIEWABLE_EXTS.has(extension)) {
-        window.open('/preview/' + filePath + '/', '_blank');
+        window.open(previewUrl, '_blank');
         return;
     }
     document.getElementById('noPreviewMsg').textContent =
         extension.toUpperCase() + ' files cannot be previewed in the browser. Please download the file and open it with the appropriate application.';
     const downloadBtn = document.getElementById('noPreviewDownloadBtn');
     downloadBtn.onclick = () => {
-        downloadFile(filePath);
+        downloadFile(downloadUrl);
         document.getElementById('noPreviewModal').style.display = 'none';
     };
     document.getElementById('noPreviewModal').style.display = 'block';
@@ -851,7 +855,7 @@ async function performSearch(query) {
     const scope = document.getElementById('searchScope')?.value || 'all';
     const currentFolder = document.getElementById('currentFolderPath')?.value || '';
 
-    let url = `/search/?q=${encodeURIComponent(query)}`;
+    let url = `{% url 'search_files' %}?q=${encodeURIComponent(query)}`;
     if (fileType) url += `&type=${encodeURIComponent(fileType)}`;
     if (scope === 'current' && currentFolder) url += `&folder=${encodeURIComponent(currentFolder)}`;
 
@@ -941,9 +945,11 @@ function displaySearchResults(results, query) {
                                       data-filepath="${escapeHtml(item.path)}"
                                       data-filename="${escapeHtml(item.name)}"
                                       data-extension="${escapeHtml(item.extension)}"
+                                      data-preview-url="${escapeHtml(item.preview_url)}"
+                                      data-download-url="${escapeHtml(item.download_url)}"
                                       onmouseover="this.style.textDecoration='underline'"
                                       onmouseout="this.style.textDecoration='none'"
-                                      onclick="event.stopPropagation(); handlePreview(this.dataset.filepath, this.dataset.filename, this.dataset.extension)">
+                                      onclick="event.stopPropagation(); handlePreview(this.dataset.previewUrl, this.dataset.downloadUrl, this.dataset.filename, this.dataset.extension)">
                                     ${escapeHtml(item.name)}
                                 </span>
                                 <div style="font-size: 0.875rem; color: var(--gray);">
@@ -965,11 +971,13 @@ function displaySearchResults(results, query) {
                         <div style="display: flex; gap: 0.5rem; justify-content: center;">
                             <button class="btn btn-secondary btn-sm download-btn"
                                     data-filepath="${escapeHtml(item.path)}"
+                                    data-download-url="${escapeHtml(item.download_url)}"
                                     title="Download">
                                 ⬇️
                             </button>
                             <button class="btn btn-sm copy-link-btn"
                                     data-filepath="${escapeHtml(item.path)}"
+                                    data-download-url="${escapeHtml(item.download_url)}"
                                     title="Copy Download Link">
                                 🔗
                             </button>
@@ -1121,7 +1129,7 @@ function bulkDownload() {
 
     const form = document.createElement('form');
     form.method = 'POST';
-    form.action = '/bulk-download/';
+    form.action = "{% url 'bulk_download' %}";
     form.style.display = 'none';
 
     const csrf = document.createElement('input');

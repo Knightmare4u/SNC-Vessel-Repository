@@ -23,11 +23,13 @@ from django.db import transaction
 from django.db.models import Q
 from django.http import (
     FileResponse,
+    Http404,
     HttpResponse,
     JsonResponse,
     StreamingHttpResponse,
 )
 from django.shortcuts import redirect, render
+from django.urls import reverse
 from django.utils.html import escape
 from django.utils.http import (
     content_disposition_header,
@@ -44,6 +46,7 @@ from .utils import (
     has_permission,
     log_activity,
     normalize_path,
+    to_url_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,6 +99,17 @@ def get_file_icon(extension):
         '.aac': '🎵',
     }
     return icon_map.get(extension, '📄')
+
+
+def get_item_urls(path, is_dir):
+    """URLs for a file browser item, built with reverse() so names are encoded."""
+    url_path = to_url_path(path)
+    if is_dir:
+        return {'browser_url': reverse('file_browser', args=[url_path])}
+    return {
+        'download_url': reverse('download_file', args=[url_path]),
+        'preview_url': reverse('file_preview', args=[url_path]),
+    }
 
 
 def custom_login(request):
@@ -167,7 +181,7 @@ def dashboard(request):
             accessible_folders.append(
                 {
                     'name': os.path.basename(folder_path),
-                    'path': folder_path,
+                    'path': to_url_path(folder_path),
                     'permission': perm['permission'],
                 }
             )
@@ -187,6 +201,7 @@ def dashboard(request):
 
 @login_required
 def file_browser(request, folder_path=''):
+    folder_path = to_url_path(folder_path)
     if not has_permission(request.user, folder_path, 'read'):
         messages.error(request, 'You do not have permission to access this folder')
         return redirect('dashboard')
@@ -199,8 +214,11 @@ def file_browser(request, folder_path=''):
         archive_path
     )
 
-    if not os.path.exists(full_path):
+    if not folder_path:
+        # Storage root may not exist yet on a fresh deployment
         os.makedirs(full_path, exist_ok=True)
+    elif not os.path.isdir(full_path):
+        raise Http404('Folder not found')
 
     # Get files and folders
     items = []
@@ -324,8 +342,8 @@ def upload_file(request):
         logger.info("Folder path: %s", folder_path)
         logger.info("Full path: %s", full_path)
 
-        # Ensure directory exists
-        os.makedirs(full_path, exist_ok=True)
+        if not os.path.isdir(full_path):
+            return JsonResponse({'error': 'Folder not found'}, status=404)
 
         files = request.FILES.getlist('files')
         uploaded_files = []
@@ -548,7 +566,7 @@ def search_files(request):
                 results.append(
                     {
                         'name': file,
-                        'path': '/' + rel_path,
+                        'path': rel_path,
                         'folder': '/' + os.path.dirname(rel_path),
                         'size': stat.st_size,
                         'formatted_size': format_file_size(stat.st_size),
@@ -556,6 +574,7 @@ def search_files(request):
                         'icon': get_file_icon(ext),
                         'modified': stat.st_mtime,
                         'created': stat.st_ctime,
+                        **get_item_urls(rel_path, is_dir=False),
                     }
                 )
 
@@ -662,7 +681,13 @@ def rename_file(request):
         return JsonResponse({'error': 'File/Folder not found'}, status=404)
 
     if full_old_path == full_new_path:
-        return JsonResponse({'success': True, 'new_path': new_path})
+        return JsonResponse(
+            {
+                'success': True,
+                'new_path': to_url_path(new_path),
+                **get_item_urls(new_path, os.path.isdir(full_new_path)),
+            }
+        )
 
     if os.path.exists(full_new_path):
         return JsonResponse(
@@ -707,7 +732,12 @@ def rename_file(request):
             request.META.get('REMOTE_ADDR'),
         )
         return JsonResponse(
-            {'success': True, 'new_path': new_path, 'modified': modified_str}
+            {
+                'success': True,
+                'new_path': to_url_path(new_path),
+                'modified': modified_str,
+                **get_item_urls(new_path, os.path.isdir(full_new_path)),
+            }
         )
 
     except Exception as e:
