@@ -1,13 +1,11 @@
-import os
 from pathlib import Path
 
 from decouple import config
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = config(
-    'SECRET_KEY', default='django-insecure-change-this-in-production-12345'
-)
+# No default: a missing key must stop startup, not fall back to a public one
+SECRET_KEY = config('SECRET_KEY')
 
 DEBUG = config('DEBUG', default=True, cast=bool)
 
@@ -18,9 +16,10 @@ ALLOWED_HOSTS = [
     '192.168.10.11',
     '121.200.241.178',
     '.ngrok-free.dev',
-    'snseafiles.sinceregp.com',
+    '.sinceregp.com',  # sinceregp.com and every subdomain (all ours)
 ]
-CSRF_TRUSTED_ORIGINS = ['https://snseafiles.sinceregp.com']
+
+CSRF_TRUSTED_ORIGINS = ['https://*.sinceregp.com']
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -124,7 +123,6 @@ LOGOUT_REDIRECT_URL = '/'
 # SESSION_ENGINE = 'django.contrib.sessions.backends.db'
 
 # FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024
-DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024 * 1024  # 10GB
 
 # File storage settings
 FILE_STORAGE_ROOT = config('FILE_STORAGE_ROOT', default=BASE_DIR / 'vessel_files')

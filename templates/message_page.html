@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div style="max-width: 600px; margin: 50px auto;">
+    <div class="card" style="text-align: center;">
+        <div style="font-size: 3rem; margin-bottom: 1rem;">{% block icon %}{% endblock %}</div>
+        <h2 style="margin-bottom: 1rem; color: var(--primary-blue);">{% block heading %}{% endblock %}</h2>
+        <p style="margin-bottom: 2rem; color: var(--gray);">{% block message %}{% endblock %}</p>
+        <a href="{% url 'dashboard' %}" class="btn btn-primary">Back to Dashboard</a>
+    </div>
+</div>
+{% endblock %}

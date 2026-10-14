@@ -90,10 +90,12 @@ def has_permission(user, folder_path, required_permission):
 
 
 def log_activity(user, filename, filepath, activity_type, ip_address, file_size=None):
+    # Truncate to the column sizes; PostgreSQL rejects longer values
+    # (e.g. a rename logged as "long old name → long new name")
     FileActivity.objects.create(
         user=user,
-        filename=filename,
-        filepath=filepath,
+        filename=filename[:255],
+        filepath=filepath[:1000],
         activity_type=activity_type,
         ip_address=ip_address,
         file_size=file_size,

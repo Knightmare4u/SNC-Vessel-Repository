@@ -228,3 +228,6 @@ logs/
 
 # Backups
 backups/
+
+# Collected static files (this project)
+/staticfiles/

@@ -612,12 +612,20 @@ async function createFolder() {
 
         if (result.success) {
             location.reload();
+        } else if (response.status === 404) {
+            handleFolderGone();
         } else {
             showToast(result.error, 'error');
         }
     } catch (error) {
         showToast(`Create folder failed: ${error.message}`, 'error');
     }
+}
+
+// The current folder was deleted or renamed by someone else while this page
+// was open. Stay on the page and just tell the user, like OneDrive does.
+function handleFolderGone() {
+    showToast('❌ This folder no longer exists. It may have been deleted or renamed.', 'error');
 }
 
 async function deleteFile(filePath, fileName) {
@@ -709,8 +717,17 @@ function formatBytes(bytes) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
+// Django rejects requests with more files (DATA_UPLOAD_MAX_NUMBER_FILES)
+const MAX_UPLOAD_FILES = 100;
+
 function handleFileUpload(files) {
     if (files.length === 0) return;
+
+    if (files.length > MAX_UPLOAD_FILES) {
+        showToast(`❌ You can upload up to ${MAX_UPLOAD_FILES} files at a time (selected ${files.length}). Please upload in smaller batches.`, 'error');
+        document.getElementById('fileInput').value = '';  // Let the same files be picked again
+        return;
+    }
 
     const formData = new FormData();
     const folderPath = document.getElementById('currentFolderPath').value;
@@ -759,6 +776,9 @@ function handleFileUpload(files) {
                 const msg = result ? (result.error || 'Unknown error') : 'Session expired, please log in again';
                 showToast(msg, 'error');
             }
+        } else if (xhr.status === 404) {
+            uploadProgress.style.display = 'none';
+            handleFolderGone();
         } else {
             uploadProgress.style.display = 'none';
             let result;

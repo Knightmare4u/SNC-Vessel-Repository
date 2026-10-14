@@ -17,7 +17,11 @@ from django.contrib import messages
 from django.contrib.auth import update_session_auth_hash
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import PasswordChangeForm
-from django.core.exceptions import ValidationError
+from django.core.exceptions import (
+    PermissionDenied,
+    SuspiciousFileOperation,
+    ValidationError,
+)
 from django.db import transaction
 from django.db.models import Q
 from django.http import (
@@ -59,47 +63,33 @@ FILE_TYPE_CATEGORIES = {
     'presentation': ['.ppt', '.pptx'],
     'image': ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp', '.ico'],
     'video': ['.mp4', '.webm', '.avi', '.mov', '.wmv'],
-    'audio': ['.mp3', '.wav', '.ogg', '.flac', '.m4a'],
+    'audio': ['.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac'],
     'zip': ['.zip', '.rar', '.7z', '.tar', '.gz'],
+}
+
+CATEGORY_ICONS = {
+    'document': '📘',
+    'pdf': '📕',
+    'spreadsheet': '📗',
+    'presentation': '📙',
+    'image': '🖼️',
+    'video': '🎬',
+    'audio': '🎵',
+    'zip': '📦',
+}
+
+FILE_ICONS = {
+    **{
+        ext: CATEGORY_ICONS[category]
+        for category, exts in FILE_TYPE_CATEGORIES.items()
+        for ext in exts
+    },
+    '.txt': '📄',  # Plain text, not a Word document
 }
 
 
 def get_file_icon(extension):
-    icon_map = {
-        '.pdf': '📕',
-        '.doc': '📘',
-        '.docx': '📘',
-        '.xls': '📗',
-        '.xlsx': '📗',
-        '.ppt': '📙',
-        '.pptx': '📙',
-        '.txt': '📄',
-        '.zip': '📦',
-        '.rar': '📦',
-        '.7z': '📦',
-        '.tar': '📦',
-        '.gz': '📦',
-        '.jpg': '🖼️',
-        '.jpeg': '🖼️',
-        '.png': '🖼️',
-        '.gif': '🖼️',
-        '.svg': '🖼️',
-        '.webp': '🖼️',
-        '.bmp': '🖼️',
-        '.ico': '🖼️',
-        '.mp4': '🎬',
-        '.webm': '🎬',
-        '.avi': '🎬',
-        '.mov': '🎬',
-        '.wmv': '🎬',
-        '.mp3': '🎵',
-        '.wav': '🎵',
-        '.ogg': '🎵',
-        '.flac': '🎵',
-        '.m4a': '🎵',
-        '.aac': '🎵',
-    }
-    return icon_map.get(extension, '📄')
+    return FILE_ICONS.get(extension, '📄')
 
 
 def get_item_urls(path, is_dir):
@@ -191,17 +181,30 @@ def file_browser(request, folder_path=''):
     folder_count = 0
 
     try:
-        for item in os.listdir(full_path):
-            item_path = os.path.join(full_path, item)
-            rel_path = os.path.join(folder_path, item).replace('\\', '/')
+        names = os.listdir(full_path)
+    except OSError:
+        logger.exception("Error accessing folder %s", full_path)
+        messages.error(request, 'Error accessing folder')
+        names = []
 
+    for item in names:
+        item_path = os.path.join(full_path, item)
+        rel_path = os.path.join(folder_path, item).replace('\\', '/')
+
+        try:
             if os.path.isdir(item_path):
+                try:
+                    size = f'{len(os.listdir(item_path))} items'
+                except OSError:
+                    # Folder is fine, its contents just can't be counted
+                    logger.warning("Cannot list folder %s", item_path)
+                    size = '—'
                 items.append(
                     {
                         'name': item,
                         'type': 'folder',
                         'path': rel_path,
-                        'size': f'{len(os.listdir(item_path))} items',
+                        'size': size,
                         'size_bytes': 0,
                         'modified': datetime.fromtimestamp(os.path.getmtime(item_path)),
                         'created_at': datetime.fromtimestamp(
@@ -231,9 +234,9 @@ def file_browser(request, folder_path=''):
                 )
                 total_size += size
                 file_count += 1
-    except OSError:
-        logger.exception("Error accessing folder %s", full_path)
-        messages.error(request, 'Error accessing folder')
+        except OSError:
+            # One unreadable entry must not hide the rest of the folder
+            logger.warning("Skipping unreadable entry %s", item_path)
 
     # Sort: folders first, then files
     items.sort(key=lambda x: (x['type'] != 'folder', x['name'].lower()))
@@ -267,11 +270,11 @@ def file_browser(request, folder_path=''):
 def download_file(request, file_path):
     file_path = normalize_path(file_path)
     if not has_permission(request.user, os.path.dirname(file_path), 'read'):
-        return JsonResponse({'error': 'Permission denied'}, status=403)
+        raise PermissionDenied
 
     full_path = get_storage_path(file_path)
 
-    if os.path.exists(full_path) and os.path.isfile(full_path):
+    if os.path.isfile(full_path):
         # Log download activity
         log_activity(
             request.user,
@@ -291,7 +294,7 @@ def download_file(request, file_path):
         )
         return response
 
-    return JsonResponse({'error': 'File not found'}, status=404)
+    raise Http404('File not found')
 
 
 @login_required
@@ -304,9 +307,6 @@ def upload_file(request):
 
     full_path = get_storage_path(folder_path)
 
-    logger.info("Folder path: %s", folder_path)
-    logger.info("Full path: %s", full_path)
-
     if is_in_archive(full_path):
         return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
 
@@ -317,33 +317,56 @@ def upload_file(request):
     uploaded_files = []
     total_size = 0
 
+    # Validate every name first so a bad name rejects the batch before any write
+    filenames = []
     for file in files:
         try:
-            filename = get_valid_filename(file.name)
+            filenames.append(get_valid_filename(file.name))
+        except SuspiciousFileOperation:
+            return JsonResponse(
+                {'error': f'Invalid file name: {file.name}'}, status=400
+            )
+
+    for file, filename in zip(files, filenames):
+        try:
             file_path = os.path.join(full_path, filename)
 
-            logger.info("Saving file: %s", file_path)
-
-            # Check if file already exists
+            # Exclusive create ('xb') so a concurrent upload is never overwritten
             counter = 1
             name, ext = os.path.splitext(filename)
-            while os.path.exists(file_path):
+            while True:
+                try:
+                    destination = open(file_path, 'xb')
+                    break
+                except FileExistsError:
+                    pass
+                except PermissionError:
+                    # Windows raises this instead when a folder has the name
+                    if not os.path.isdir(file_path):
+                        raise
                 filename = f"{name}_{counter}{ext}"
                 file_path = os.path.join(full_path, filename)
                 counter += 1
 
             # Save file
-            logger.info("Original size: %s", file.size)
-
             written = 0
 
-            with open(file_path, "wb+") as destination:
-                for chunk in file.chunks():
-                    destination.write(chunk)
-                    written += len(chunk)
+            try:
+                with destination:
+                    for chunk in file.chunks():
+                        destination.write(chunk)
+                        written += len(chunk)
+            except Exception:
+                os.remove(file_path)  # Don't leave a partial file behind
+                raise
 
-            logger.info("Written size: %s", written)
-            logger.info("Saved size: %s", os.path.getsize(file_path))
+            if written != file.size:
+                logger.warning(
+                    "Size mismatch for %s: expected %s, wrote %s",
+                    file_path,
+                    file.size,
+                    written,
+                )
 
             file_size = os.path.getsize(file_path)
             total_size += file_size
@@ -367,7 +390,9 @@ def upload_file(request):
                 }
             )
 
-            logger.info("Successfully uploaded: %s", filename)
+            logger.info(
+                "Uploaded %s (%s bytes) by %s", relative_path, file_size, request.user
+            )
 
         except OSError:
             logger.exception("Upload error for %s", file.name)
@@ -442,7 +467,16 @@ def delete_file(request):
             archive_dest = f'{name}_{timestamp}{ext}'
 
         os.makedirs(os.path.dirname(archive_dest), exist_ok=True)
-        shutil.move(full_path, archive_dest)
+        with transaction.atomic():
+            if os.path.isdir(full_path):
+                # Grants on a deleted folder must not carry over to a new
+                # folder created later with the same name
+                FolderPermission.objects.filter(
+                    Q(folder_path=item_path)
+                    | Q(folder_path__startswith=item_path + '/')
+                ).delete()
+            # A failed move rolls the permission delete back
+            shutil.move(full_path, archive_dest)
 
         log_activity(
             request.user,
@@ -612,13 +646,18 @@ def create_folder(request):
     if is_in_archive(full_path):
         return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
 
+    # The parent may have been deleted while the user's page was open
+    if not os.path.isdir(get_storage_path(folder_path)):
+        return JsonResponse({'error': 'Folder not found'}, status=404)
+
     if os.path.exists(full_path):
         return JsonResponse(
             {'error': 'A folder with that name already exists'}, status=400
         )
 
     try:
-        os.makedirs(full_path)
+        # mkdir, not makedirs: never recreate missing parent folders
+        os.mkdir(full_path)
         return JsonResponse({'success': True})
     except OSError:
         logger.exception("Could not create folder %s", full_path)
@@ -656,7 +695,10 @@ def rename_file(request):
         except ValidationError as e:
             return JsonResponse({'error': e.messages[0]}, status=400)
     else:
-        new_name = get_valid_filename(new_name)
+        try:
+            new_name = get_valid_filename(new_name)
+        except SuspiciousFileOperation:
+            return JsonResponse({'error': 'Invalid file name'}, status=400)
 
     new_path = posixpath.join(folder, new_name)
     full_new_path = get_storage_path(new_path)
@@ -676,7 +718,10 @@ def rename_file(request):
             }
         )
 
-    if os.path.exists(full_new_path):
+    # samefile: on case-insensitive filesystems a case-only rename "exists" already
+    if os.path.exists(full_new_path) and not os.path.samefile(
+        full_old_path, full_new_path
+    ):
         return JsonResponse(
             {'error': 'A file/folder with that name already exists'}, status=400
         )
@@ -740,25 +785,42 @@ def bulk_download(request):
     if not file_paths:
         return JsonResponse({'error': 'No files selected'}, status=400)
 
-    base_path = settings.FILE_STORAGE_ROOT
     file_paths = [normalize_path(p) for p in file_paths]
-    zs = zipstream.ZipStream()
-    total_size = 0
 
+    # All-or-nothing: never hand out a zip that silently leaves files out
     for file_path in file_paths:
         if not has_permission(request.user, os.path.dirname(file_path), 'read'):
-            continue
+            raise PermissionDenied
+        if not os.path.exists(get_storage_path(file_path)):
+            raise Http404('File not found')
+
+    zs = zipstream.ZipStream()
+    total_size = 0
+    used_names = set()
+
+    def unique_name(name):
+        # Search results can hold same-named files from different folders
+        base, ext = os.path.splitext(name)
+        candidate, counter = name, 1
+        while candidate.lower() in used_names:
+            candidate = f'{base}_{counter}{ext}'
+            counter += 1
+        used_names.add(candidate.lower())
+        return candidate
+
+    # Selected items go at the top level of the zip, as they appear on screen
+    for file_path in file_paths:
         full_path = get_storage_path(file_path)
+        top_name = unique_name(posixpath.basename(file_path))
         if os.path.isfile(full_path):
-            zs.add_path(full_path, arcname=os.path.relpath(full_path, base_path))
+            zs.add_path(full_path, arcname=top_name)
             total_size += os.path.getsize(full_path)
         elif os.path.isdir(full_path):
-            parent_path = os.path.dirname(full_path.rstrip('/\\'))
             for root, _, files in os.walk(full_path):
                 for filename in files:
                     file_full = os.path.join(root, filename)
-                    arcname = os.path.relpath(file_full, parent_path)
-                    zs.add_path(file_full, arcname=arcname, recurse=False)
+                    rel = os.path.relpath(file_full, full_path).replace('\\', '/')
+                    zs.add_path(file_full, arcname=f'{top_name}/{rel}', recurse=False)
                     total_size += os.path.getsize(file_full)
 
     current_folder = os.path.dirname(file_paths[0].rstrip('/\\')) or '/'
@@ -768,7 +830,6 @@ def bulk_download(request):
     name_summary = ', '.join(names)
     if len(file_paths) > MAX_NAMES_SHOWN:
         name_summary += f', +{len(file_paths) - MAX_NAMES_SHOWN} more'
-    name_summary = name_summary[:255]
 
     log_activity(
         request.user,
@@ -825,17 +886,32 @@ def file_preview(request, file_path):
 
     file_path = normalize_path(file_path)
     if not has_permission(request.user, os.path.dirname(file_path), 'read'):
-        return JsonResponse({'error': 'Permission denied'}, status=403)
+        raise PermissionDenied
 
     full_path = get_storage_path(file_path)
 
-    if not os.path.exists(full_path) or not os.path.isfile(full_path):
-        return JsonResponse({'error': 'File not found'}, status=404)
+    if not os.path.isfile(full_path):
+        raise Http404('File not found')
+
+    # Log once here so every preview type (docx/xlsx return early) is recorded
+    log_activity(
+        request.user,
+        os.path.basename(file_path),
+        file_path,
+        'view',
+        request.META.get('REMOTE_ADDR'),
+        os.path.getsize(full_path),
+    )
 
     ext = os.path.splitext(full_path)[1].lower()
     if ext == '.docx':
-        with open(full_path, 'rb') as f:
-            result = mammoth.convert_to_html(f)
+        try:
+            with open(full_path, 'rb') as f:
+                result = mammoth.convert_to_html(f)
+        except Exception:
+            # Uploaded files are untrusted and the parsers raise many error types
+            logger.exception("Preview failed for %s", full_path)
+            return render(request, 'filemanager/preview_unavailable.html', status=422)
         html = (
             '<!DOCTYPE html><html><head><meta charset="utf-8">'
             '<style>body{font-family:sans-serif;max-width:900px;margin:40px auto;padding:0 20px}</style>'
@@ -847,36 +923,44 @@ def file_preview(request, file_path):
 
     if ext in ('.xlsx', '.xls'):
         sheets_html = []
-        if ext == '.xls':
-            wb = xlrd.open_workbook(full_path)
-            for sheet_name in wb.sheet_names():
-                ws = wb.sheet_by_name(sheet_name)
-                rows_html = []
-                for i in range(ws.nrows):
-                    row = [get_value(ws.cell(i, j), wb) for j in range(ws.ncols)]
-                    if all(cell in ('', None) for cell in row):
-                        continue
-                    rows_html.append(f'<tr>{render_row(row, i)}</tr>')
+        try:
+            if ext == '.xls':
+                wb = xlrd.open_workbook(full_path)
+                for sheet_name in wb.sheet_names():
+                    ws = wb.sheet_by_name(sheet_name)
+                    rows_html = []
+                    for i in range(ws.nrows):
+                        row = [get_value(ws.cell(i, j), wb) for j in range(ws.ncols)]
+                        if all(cell in ('', None) for cell in row):
+                            continue
+                        rows_html.append(f'<tr>{render_row(row, i)}</tr>')
 
-                sheets_html.append(
-                    f'<h3>{escape(sheet_name)}</h3>'
-                    f'<div class="table-wrap"><table>{"".join(rows_html)}</table></div>'
-                )
-        else:
-            wb = openpyxl.load_workbook(full_path, read_only=True, data_only=True)
-            for sheet_name in wb.sheetnames:
-                ws = wb[sheet_name]
-                rows_html = []
-                for i, row in enumerate(ws.iter_rows(values_only=True)):
-                    if all(cell in ('', None) for cell in row):
-                        continue
-                    rows_html.append(f'<tr>{render_row(row, i)}</tr>')
+                    sheets_html.append(
+                        f'<h3>{escape(sheet_name)}</h3>'
+                        f'<div class="table-wrap"><table>{"".join(rows_html)}</table></div>'
+                    )
+            else:
+                wb = openpyxl.load_workbook(full_path, read_only=True, data_only=True)
+                # read_only keeps the file open; close it even if reading fails
+                try:
+                    for sheet_name in wb.sheetnames:
+                        ws = wb[sheet_name]
+                        rows_html = []
+                        for i, row in enumerate(ws.iter_rows(values_only=True)):
+                            if all(cell in ('', None) for cell in row):
+                                continue
+                            rows_html.append(f'<tr>{render_row(row, i)}</tr>')
 
-                sheets_html.append(
-                    f'<h3>{escape(sheet_name)}</h3>'
-                    f'<div class="table-wrap"><table>{"".join(rows_html)}</table></div>'
-                )
-            wb.close()
+                        sheets_html.append(
+                            f'<h3>{escape(sheet_name)}</h3>'
+                            f'<div class="table-wrap"><table>{"".join(rows_html)}</table></div>'
+                        )
+                finally:
+                    wb.close()
+        except Exception:
+            # Uploaded files are untrusted and the parsers raise many error types
+            logger.exception("Preview failed for %s", full_path)
+            return render(request, 'filemanager/preview_unavailable.html', status=422)
 
         html = (
             '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
@@ -937,14 +1021,5 @@ def file_preview(request, file_path):
     disposition = content_disposition_header(False, os.path.basename(file_path))
     if disposition:
         response['Content-Disposition'] = disposition
-
-    log_activity(
-        request.user,
-        os.path.basename(file_path),
-        file_path,
-        'view',
-        request.META.get('REMOTE_ADDR'),
-        os.path.getsize(full_path),
-    )
 
     return response
