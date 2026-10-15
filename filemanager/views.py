@@ -6,7 +6,6 @@ import posixpath
 import re
 import shutil
 from datetime import datetime
-from pathlib import Path
 
 import mammoth
 import openpyxl
@@ -165,7 +164,6 @@ def file_browser(request, folder_path=''):
 
     full_path = get_storage_path(folder_path)
 
-    archive_path = Path(settings.ARCHIVE_ROOT)
     in_archive = is_in_archive(full_path)
 
     if not folder_path:
@@ -193,6 +191,9 @@ def file_browser(request, folder_path=''):
 
         try:
             if os.path.isdir(item_path):
+                # Only superusers can open the archive, so others don't see it
+                if is_in_archive(item_path) and not request.user.is_superuser:
+                    continue
                 try:
                     size = f'{len(os.listdir(item_path))} items'
                 except OSError:
@@ -211,7 +212,7 @@ def file_browser(request, folder_path=''):
                             os.path.getctime(item_path)
                         ),
                         'icon': '📁',
-                        'is_archive': Path(item_path) == archive_path,
+                        'is_archive': is_in_archive(item_path),
                     }
                 )
                 folder_count += 1
@@ -529,6 +530,10 @@ def search_files(request):
             return
 
         for root, _, files in os.walk(search_path, followlinks=False):
+            # Only superusers can open the archive, so others don't find files in it
+            if is_in_archive(root) and not request.user.is_superuser:
+                continue
+
             # Ensure traversal never escapes the storage root
             root_real_path = os.path.realpath(root)
             if root_real_path != base_path and not root_real_path.startswith(

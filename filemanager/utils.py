@@ -78,6 +78,11 @@ def has_permission(user, folder_path, required_permission):
     if user.is_superuser:
         return True
 
+    # Deleted files from every folder end up in the archive, so only superusers
+    # may open it, even with access to the folder it is in
+    if is_in_archive(get_storage_path(folder_path)):
+        return False
+
     folder = PurePosixPath(normalize_path(folder_path))
     best = 0
 
