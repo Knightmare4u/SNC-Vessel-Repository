@@ -93,8 +93,11 @@ def create_folder(parent, name, user):
 def upload_file(folder, uploaded, name, user):
     """Save an upload into folder; a name in use gets a _1, _2… suffix."""
     file = File(folder=folder, created_by=user)
-    file.file.save(name, uploaded, save=False)  # Written to disk under a UUID name
+    # Named before writing, so a half-written file can be found and removed:
+    # Django leaves one behind when the write fails
+    stored_name = file.file.field.generate_filename(file, name)
     try:
+        file.file.name = file.file.storage.save(stored_name, uploaded)
         file.size = file.file.size
         base, ext = posixpath.splitext(name)
         candidate, counter = name, 1
@@ -112,7 +115,7 @@ def upload_file(folder, uploaded, name, user):
             candidate = f'{base}_{counter}{ext}'
             counter += 1
     except Exception:
-        file.file.delete(save=False)  # Don't leave an orphaned file on disk
+        file.file.storage.delete(stored_name)  # Don't leave an orphaned file on disk
         raise
 
 
