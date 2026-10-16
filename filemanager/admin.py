@@ -1,30 +1,23 @@
-import os
+import posixpath
 
 from django import forms
-from django.conf import settings
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 
-from .models import FileActivity, FolderPermission, UserProfile
+from .models import File, FileActivity, Folder, FolderPermission, UserProfile
+from .services import filesystem
 from .utils import format_file_size, get_storage_path, is_in_archive, normalize_path
 
 
 def get_folder_choices():
-    """Every existing folder under the storage root, except the archive."""
-    root = os.path.abspath(settings.FILE_STORAGE_ROOT)
-    paths = ['/']
-    for dirpath, dirnames, _ in os.walk(root):
-        # Pruning dirnames in place also stops os.walk descending into them
-        dirnames[:] = [
-            name
-            for name in dirnames
-            if not is_in_archive(os.path.join(dirpath, name))
-        ]
-        for name in dirnames:
-            rel = os.path.relpath(os.path.join(dirpath, name), root)
-            paths.append(normalize_path(rel))
+    """Every existing folder, except the archive."""
+    paths = [
+        path
+        for path in filesystem.get_folder_paths().values()
+        if not is_in_archive(get_storage_path(path))
+    ]
     return sorted(paths, key=str.lower)
 
 
@@ -65,10 +58,9 @@ class FolderPermissionForm(forms.ModelForm):
     def clean_folder_path(self):
         folder_path = normalize_path(self.cleaned_data['folder_path'])
         if 'folder_path' in self.changed_data:
-            full_path = get_storage_path(folder_path)
-            if not os.path.isdir(full_path):
+            if filesystem.resolve_folder(folder_path) is None:
                 raise ValidationError('Folder does not exist')
-            if is_in_archive(full_path):
+            if is_in_archive(get_storage_path(folder_path)):
                 raise ValidationError('Archive folders cannot be selected')
         return folder_path
 
@@ -218,10 +210,75 @@ class FileActivityAdmin(admin.ModelAdmin):
         return format_file_size(obj.file_size) if obj.file_size else "-"
 
 
+class ReadOnlyAdmin(admin.ModelAdmin):
+    # View-only: changes go through the site, which keeps names unique,
+    # moves permissions on rename and only soft-deletes
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class FolderAdmin(ReadOnlyAdmin):
+    list_display = ['name', 'path', 'created_by', 'created_at', 'deleted_at']
+    list_select_related = ['parent', 'created_by']
+    list_filter = [('deleted_at', admin.EmptyFieldListFilter)]
+    search_fields = ['name']
+
+    @admin.display(description='Path')
+    def path(self, obj):
+        return filesystem.get_path(obj)
+
+
+class FileAdmin(ReadOnlyAdmin):
+    list_display = [
+        'name',
+        'path',
+        'size_display',
+        'created_by',
+        'created_at',
+        'deleted_at',
+    ]
+    list_select_related = ['folder', 'created_by']
+    list_filter = [('deleted_at', admin.EmptyFieldListFilter)]
+    search_fields = ['name']
+    # 'stored_as' replaces the file field, whose link would point under MEDIA_URL
+    fields = [
+        'folder',
+        'name',
+        'stored_as',
+        'size',
+        'created_by',
+        'created_at',
+        'updated_at',
+        'deleted_by',
+        'deleted_at',
+    ]
+    readonly_fields = ['stored_as']
+
+    @admin.display(description='Path')
+    def path(self, obj):
+        return posixpath.join(filesystem.get_path(obj.folder), obj.name)
+
+    @admin.display(description='Size')
+    def size_display(self, obj):
+        return format_file_size(obj.size)
+
+    @admin.display(description='Stored as')
+    def stored_as(self, obj):
+        return obj.file.name
+
+
 admin.site.unregister(User)
 admin.site.register(User, CustomUserAdmin)
 admin.site.register(FolderPermission, FolderPermissionAdmin)
 admin.site.register(FileActivity, FileActivityAdmin)
+admin.site.register(Folder, FolderAdmin)
+admin.site.register(File, FileAdmin)
 
 # Custom admin site header
 admin.site.site_header = "SNSeaFile Administration"

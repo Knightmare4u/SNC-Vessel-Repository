@@ -4,14 +4,12 @@ import mimetypes
 import os
 import posixpath
 import re
-import shutil
-from datetime import datetime
+from pathlib import PurePosixPath
 
 import mammoth
 import openpyxl
 import xlrd
 import zipstream
-from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import update_session_auth_hash
 from django.contrib.auth.decorators import login_required
@@ -21,8 +19,7 @@ from django.core.exceptions import (
     SuspiciousFileOperation,
     ValidationError,
 )
-from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.http import (
     FileResponse,
     Http404,
@@ -32,13 +29,15 @@ from django.http import (
 )
 from django.shortcuts import redirect, render
 from django.urls import reverse
+from django.utils import timezone
 from django.utils.html import escape
 from django.utils.http import content_disposition_header
 from django.utils.text import get_valid_filename
 from django.views.decorators.http import require_POST
 from xlrd.xldate import xldate_as_datetime
 
-from .models import FileActivity, FolderPermission, UploadSession, UserProfile
+from .models import File, FileActivity, Folder, UploadSession, UserProfile
+from .services import filesystem
 from .utils import (
     format_file_size,
     get_storage_path,
@@ -91,6 +90,16 @@ def get_file_icon(extension):
     return FILE_ICONS.get(extension, '📄')
 
 
+def is_on_disk(file):
+    """The row outlives its file on disk if someone removes it outside the site."""
+    if file.file.storage.exists(file.file.name):
+        return True
+    logger.error(
+        "File %s (id %s) is missing on disk: %s", file.name, file.pk, file.file.name
+    )
+    return False
+
+
 def get_item_urls(path, is_dir):
     """URLs for a file browser item, built with reverse() so names are encoded."""
     url_path = to_url_path(path)
@@ -125,15 +134,13 @@ def change_password(request):
 
 @login_required
 def dashboard(request):
-    base_path = settings.FILE_STORAGE_ROOT
     user_permissions = get_user_permissions(request.user)
 
     # Get accessible folders
     accessible_folders = []
     for perm in user_permissions:
         folder_path = perm['folder_path']
-        full_path = os.path.join(base_path, folder_path.lstrip('/'))
-        if os.path.exists(full_path):
+        if filesystem.resolve_folder(folder_path):
             accessible_folders.append(
                 {
                     'name': os.path.basename(folder_path),
@@ -162,15 +169,21 @@ def file_browser(request, folder_path=''):
         messages.error(request, 'You do not have permission to access this folder')
         return redirect('dashboard')
 
-    full_path = get_storage_path(folder_path)
-
-    in_archive = is_in_archive(full_path)
-
-    if not folder_path:
-        # Storage root may not exist yet on a fresh deployment
-        os.makedirs(full_path, exist_ok=True)
-    elif not os.path.isdir(full_path):
+    folder = filesystem.resolve_folder(folder_path)
+    if folder is None:
         raise Http404('Folder not found')
+
+    in_archive = is_in_archive(get_storage_path(folder_path))
+
+    subfolders = folder.children.filter(deleted_at__isnull=True).annotate(
+        folder_count=Count(
+            'children', filter=Q(children__deleted_at__isnull=True), distinct=True
+        ),
+        file_count=Count(
+            'files', filter=Q(files__deleted_at__isnull=True), distinct=True
+        ),
+    )
+    files = folder.files.filter(deleted_at__isnull=True)
 
     # Get files and folders
     items = []
@@ -178,66 +191,44 @@ def file_browser(request, folder_path=''):
     file_count = 0
     folder_count = 0
 
-    try:
-        names = os.listdir(full_path)
-    except OSError:
-        logger.exception("Error accessing folder %s", full_path)
-        messages.error(request, 'Error accessing folder')
-        names = []
+    for subfolder in subfolders:
+        rel_path = posixpath.join(folder_path, subfolder.name)
+        archive = is_in_archive(get_storage_path(rel_path))
+        # Only superusers can open the archive, so others don't see it
+        if archive and not request.user.is_superuser:
+            continue
+        items.append(
+            {
+                'name': subfolder.name,
+                'type': 'folder',
+                'path': rel_path,
+                'size': f'{subfolder.folder_count + subfolder.file_count} items',
+                'size_bytes': 0,
+                'modified': subfolder.updated_at,
+                'created_at': subfolder.created_at,
+                'icon': '📁',
+                'is_archive': archive,
+            }
+        )
+        folder_count += 1
 
-    for item in names:
-        item_path = os.path.join(full_path, item)
-        rel_path = os.path.join(folder_path, item).replace('\\', '/')
-
-        try:
-            if os.path.isdir(item_path):
-                # Only superusers can open the archive, so others don't see it
-                if is_in_archive(item_path) and not request.user.is_superuser:
-                    continue
-                try:
-                    size = f'{len(os.listdir(item_path))} items'
-                except OSError:
-                    # Folder is fine, its contents just can't be counted
-                    logger.warning("Cannot list folder %s", item_path)
-                    size = '—'
-                items.append(
-                    {
-                        'name': item,
-                        'type': 'folder',
-                        'path': rel_path,
-                        'size': size,
-                        'size_bytes': 0,
-                        'modified': datetime.fromtimestamp(os.path.getmtime(item_path)),
-                        'created_at': datetime.fromtimestamp(
-                            os.path.getctime(item_path)
-                        ),
-                        'icon': '📁',
-                        'is_archive': is_in_archive(item_path),
-                    }
-                )
-                folder_count += 1
-            else:
-                size = os.path.getsize(item_path)
-                items.append(
-                    {
-                        'name': item,
-                        'type': 'file',
-                        'path': rel_path,
-                        'size': format_file_size(size),
-                        'size_bytes': size,
-                        'modified': datetime.fromtimestamp(os.path.getmtime(item_path)),
-                        'created_at': datetime.fromtimestamp(
-                            os.path.getctime(item_path)
-                        ),
-                        'extension': os.path.splitext(item)[1].lower(),
-                        'icon': get_file_icon(os.path.splitext(item)[1].lower()),
-                    }
-                )
-                total_size += size
-                file_count += 1
-        except OSError:
-            # One unreadable entry must not hide the rest of the folder
-            logger.warning("Skipping unreadable entry %s", item_path)
+    for file in files:
+        extension = posixpath.splitext(file.name)[1].lower()
+        items.append(
+            {
+                'name': file.name,
+                'type': 'file',
+                'path': posixpath.join(folder_path, file.name),
+                'size': format_file_size(file.size),
+                'size_bytes': file.size,
+                'modified': file.updated_at,
+                'created_at': file.created_at,
+                'extension': extension,
+                'icon': get_file_icon(extension),
+            }
+        )
+        total_size += file.size
+        file_count += 1
 
     # Sort: folders first, then files
     items.sort(key=lambda x: (x['type'] != 'folder', x['name'].lower()))
@@ -273,29 +264,28 @@ def download_file(request, file_path):
     if not has_permission(request.user, os.path.dirname(file_path), 'read'):
         raise PermissionDenied
 
-    full_path = get_storage_path(file_path)
+    file = filesystem.resolve_file(file_path)
+    if file is None or not is_on_disk(file):
+        raise Http404('File not found')
 
-    if os.path.isfile(full_path):
-        # Log download activity
-        log_activity(
-            request.user,
-            os.path.basename(file_path),
-            file_path,
-            'download',
-            request.META.get('REMOTE_ADDR'),
-            os.path.getsize(full_path),
-        )
+    # Log download activity
+    log_activity(
+        request.user,
+        file.name,
+        file_path,
+        'download',
+        request.META.get('REMOTE_ADDR'),
+        file.size,
+    )
 
-        content_type, encoding = mimetypes.guess_type(full_path)
-        response = FileResponse(
-            open(full_path, 'rb'),
-            content_type=content_type,
-            as_attachment=True,
-            filename=os.path.basename(file_path),
-        )
-        return response
-
-    raise Http404('File not found')
+    content_type, encoding = mimetypes.guess_type(file.name)
+    response = FileResponse(
+        file.file.open('rb'),
+        content_type=content_type,
+        as_attachment=True,
+        filename=file.name,
+    )
+    return response
 
 
 @login_required
@@ -311,7 +301,8 @@ def upload_file(request):
     if is_in_archive(full_path):
         return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
 
-    if not os.path.isdir(full_path):
+    folder = filesystem.resolve_folder(folder_path)
+    if folder is None:
         return JsonResponse({'error': 'Folder not found'}, status=404)
 
     files = request.FILES.getlist('files')
@@ -330,50 +321,12 @@ def upload_file(request):
 
     for file, filename in zip(files, filenames):
         try:
-            file_path = os.path.join(full_path, filename)
-
-            # Exclusive create ('xb') so a concurrent upload is never overwritten
-            counter = 1
-            name, ext = os.path.splitext(filename)
-            while True:
-                try:
-                    destination = open(file_path, 'xb')
-                    break
-                except FileExistsError:
-                    pass
-                except PermissionError:
-                    # Windows raises this instead when a folder has the name
-                    if not os.path.isdir(file_path):
-                        raise
-                filename = f"{name}_{counter}{ext}"
-                file_path = os.path.join(full_path, filename)
-                counter += 1
-
-            # Save file
-            written = 0
-
-            try:
-                with destination:
-                    for chunk in file.chunks():
-                        destination.write(chunk)
-                        written += len(chunk)
-            except Exception:
-                os.remove(file_path)  # Don't leave a partial file behind
-                raise
-
-            if written != file.size:
-                logger.warning(
-                    "Size mismatch for %s: expected %s, wrote %s",
-                    file_path,
-                    file.size,
-                    written,
-                )
-
-            file_size = os.path.getsize(file_path)
+            saved = filesystem.upload_file(folder, file, filename, request.user)
+            filename, file_size = saved.name, saved.size
             total_size += file_size
 
             # Log upload activity
-            relative_path = os.path.join(folder_path, filename).replace('\\', '/')
+            relative_path = posixpath.join(folder_path, filename)
             log_activity(
                 request.user,
                 filename,
@@ -452,46 +405,27 @@ def delete_file(request):
     if is_in_archive(full_path):
         return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
 
-    try:
-        if not os.path.exists(full_path):
-            return JsonResponse({'error': 'File/folder not found'}, status=404)
+    item = filesystem.resolve(item_path)
+    if item is None:
+        return JsonResponse({'error': 'File/folder not found'}, status=404)
 
-        file_size = os.path.getsize(full_path) if os.path.isfile(full_path) else 0
+    if isinstance(item, Folder):
+        filesystem.delete_folder(item, request.user)
+        file_size = 0
+    else:
+        filesystem.delete_file(item, request.user)
+        file_size = item.size
 
-        # Build archive destination path, mirroring the original structure
-        archive_dest = get_storage_path(item_path, root=settings.ARCHIVE_ROOT)
+    log_activity(
+        request.user,
+        item.name,
+        item_path,
+        'delete',
+        request.META.get('REMOTE_ADDR'),
+        file_size,
+    )
 
-        # Avoid overwriting existing archive entries by appending a timestamp
-        if os.path.exists(archive_dest):
-            name, ext = os.path.splitext(archive_dest)
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            archive_dest = f'{name}_{timestamp}{ext}'
-
-        os.makedirs(os.path.dirname(archive_dest), exist_ok=True)
-        with transaction.atomic():
-            if os.path.isdir(full_path):
-                # Grants on a deleted folder must not carry over to a new
-                # folder created later with the same name
-                FolderPermission.objects.filter(
-                    Q(folder_path=item_path)
-                    | Q(folder_path__startswith=item_path + '/')
-                ).delete()
-            # A failed move rolls the permission delete back
-            shutil.move(full_path, archive_dest)
-
-        log_activity(
-            request.user,
-            os.path.basename(item_path),
-            item_path,
-            'delete',
-            request.META.get('REMOTE_ADDR'),
-            file_size,
-        )
-
-        return JsonResponse({'success': True})
-    except OSError:
-        logger.exception("Delete failed for %s", item_path)
-        return JsonResponse({'error': 'Delete failed'}, status=500)
+    return JsonResponse({'success': True})
 
 
 @login_required
@@ -503,126 +437,55 @@ def search_files(request):
     file_type = request.GET.get('type', '')
     folder_filter = request.GET.get('folder', '')
 
-    base_path = os.path.realpath(settings.FILE_STORAGE_ROOT)
-
-    results = []
-    seen = set()
-
     allowed_exts = FILE_TYPE_CATEGORIES.get(file_type, []) if file_type else []
-    user_permissions = get_user_permissions(request.user)
 
-    # -------------------------
-    # Safe join (avoid path traversal + symlink escape)
-    # -------------------------
-    def safe_join(base, relative_path):
-        target = os.path.realpath(os.path.join(base, relative_path.lstrip('/')))
-
-        if target != base and not target.startswith(base + os.sep):
-            return None
-
-        return target
-
-    # -------------------------
-    # Collect results (safe walk)
-    # -------------------------
-    def collect_results(search_path):
-        if not search_path or not os.path.exists(search_path):
-            return
-
-        for root, _, files in os.walk(search_path, followlinks=False):
-            # Only superusers can open the archive, so others don't find files in it
-            if is_in_archive(root) and not request.user.is_superuser:
-                continue
-
-            # Ensure traversal never escapes the storage root
-            root_real_path = os.path.realpath(root)
-            if root_real_path != base_path and not root_real_path.startswith(
-                base_path + os.sep
-            ):
-                continue
-
-            for file in files:
-                if query.lower() not in file.lower():
-                    continue
-
-                file_path = os.path.join(root, file)
-                file_real = os.path.realpath(file_path)
-
-                # Ensure file remains inside the storage root
-                if file_real != base_path and not file_real.startswith(
-                    base_path + os.sep
-                ):
-                    continue
-
-                rel_path = os.path.relpath(file_real, base_path).replace('\\', '/')
-
-                # Prevent duplicate results
-                if rel_path in seen:
-                    continue
-
-                # File type filtering
-                ext = os.path.splitext(file)[1].lower()
-                if allowed_exts and ext not in allowed_exts:
-                    continue
-
-                try:
-                    stat = os.stat(file_real)
-                except (FileNotFoundError, PermissionError, OSError):
-                    continue
-
-                seen.add(rel_path)
-
-                results.append(
-                    {
-                        'name': file,
-                        'path': rel_path,
-                        'folder': '/' + os.path.dirname(rel_path),
-                        'size': stat.st_size,
-                        'formatted_size': format_file_size(stat.st_size),
-                        'extension': ext,
-                        'icon': get_file_icon(ext),
-                        'modified': stat.st_mtime,
-                        'created': stat.st_ctime,
-                        **get_item_urls(rel_path, is_dir=False),
-                    }
-                )
-
-    # -------------------------
-    # Search within a specific folder
-    # -------------------------
     if folder_filter:
         folder = normalize_path(folder_filter)
 
         if not has_permission(request.user, folder, 'read'):
             return JsonResponse({'error': 'Permission denied'}, status=403)
 
-        collect_results(get_storage_path(folder))
-
-    # -------------------------
-    # Search across all permitted folders
-    # -------------------------
+        scopes = [folder]
     else:
-        permitted = sorted(
-            perm['folder_path'].rstrip('/')
-            for perm in user_permissions
-            if perm['permission'] in ['read', 'write', 'admin']
+        # Every grant includes read access
+        scopes = [
+            normalize_path(perm['folder_path'])
+            for perm in get_user_permissions(request.user)
+        ]
+
+    folder_paths = filesystem.get_folder_paths()
+    files = File.objects.filter(deleted_at__isnull=True, name__icontains=query)
+
+    results = []
+    for file in files.order_by('name'):
+        ext = posixpath.splitext(file.name)[1].lower()
+        if allowed_exts and ext not in allowed_exts:
+            continue
+
+        folder_path = folder_paths[file.folder_id]
+        if not any(PurePosixPath(folder_path).is_relative_to(s) for s in scopes):
+            continue
+
+        # Only superusers can open the archive, so others don't find files in it
+        in_archive = is_in_archive(get_storage_path(folder_path))
+        if in_archive and not request.user.is_superuser:
+            continue
+
+        rel_path = to_url_path(posixpath.join(folder_path, file.name))
+        results.append(
+            {
+                'name': file.name,
+                'path': rel_path,
+                'folder': folder_path,
+                'size': file.size,
+                'formatted_size': format_file_size(file.size),
+                'extension': ext,
+                'icon': get_file_icon(ext),
+                'modified': file.updated_at.timestamp(),
+                'created': file.created_at.timestamp(),
+                **get_item_urls(rel_path, is_dir=False),
+            }
         )
-
-        deduped = []
-
-        for path in permitted:
-            if any(
-                path == parent or path.startswith(parent + '/') for parent in deduped
-            ):
-                continue
-
-            deduped.append(path)
-
-        for path in deduped:
-            target_path = safe_join(base_path, path)
-
-            if target_path:
-                collect_results(target_path)
 
     return JsonResponse({'results': results})
 
@@ -652,21 +515,15 @@ def create_folder(request):
         return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
 
     # The parent may have been deleted while the user's page was open
-    if not os.path.isdir(get_storage_path(folder_path)):
+    parent = filesystem.resolve_folder(folder_path)
+    if parent is None:
         return JsonResponse({'error': 'Folder not found'}, status=404)
 
-    if os.path.exists(full_path):
-        return JsonResponse(
-            {'error': 'A folder with that name already exists'}, status=400
-        )
-
     try:
-        # mkdir, not makedirs: never recreate missing parent folders
-        os.mkdir(full_path)
-        return JsonResponse({'success': True})
-    except OSError:
-        logger.exception("Could not create folder %s", full_path)
-        return JsonResponse({'error': 'Could not create folder'}, status=500)
+        filesystem.create_folder(parent, folder_name, request.user)
+    except ValidationError as e:
+        return JsonResponse({'error': e.messages[0]}, status=400)
+    return JsonResponse({'success': True})
 
 
 @login_required
@@ -693,8 +550,11 @@ def rename_file(request):
 
     full_old_path = get_storage_path(old_path)
 
+    item = filesystem.resolve(old_path)
+    is_folder = isinstance(item, Folder)
+
     # Folders keep the user's name; files are sanitized like uploads
-    if os.path.isdir(full_old_path):
+    if is_folder:
         try:
             validate_name(new_name)
         except ValidationError as e:
@@ -711,75 +571,42 @@ def rename_file(request):
     if is_in_archive(full_old_path) or is_in_archive(full_new_path):
         return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
 
-    if not os.path.exists(full_old_path):
+    if item is None:
         return JsonResponse({'error': 'File/Folder not found'}, status=404)
 
-    if full_old_path == full_new_path:
+    if new_name == item.name:
         return JsonResponse(
             {
                 'success': True,
                 'new_path': to_url_path(new_path),
-                **get_item_urls(new_path, os.path.isdir(full_new_path)),
+                **get_item_urls(new_path, is_folder),
             }
-        )
-
-    # samefile: on case-insensitive filesystems a case-only rename "exists" already
-    if os.path.exists(full_new_path) and not os.path.samefile(
-        full_old_path, full_new_path
-    ):
-        return JsonResponse(
-            {'error': 'A file/folder with that name already exists'}, status=400
         )
 
     try:
-        with transaction.atomic():
-            if os.path.isdir(full_old_path):
-                old_folder_path = old_path
-                new_folder_path = new_path
+        if is_folder:
+            filesystem.rename_folder(item, new_name)
+        else:
+            filesystem.rename_file(item, new_name)
+    except ValidationError as e:
+        return JsonResponse({'error': e.messages[0]}, status=400)
 
-                permissions = FolderPermission.objects.select_for_update().filter(
-                    Q(folder_path=old_folder_path)
-                    | Q(folder_path__startswith=old_folder_path + '/')
-                )
-
-                perms_to_update = []
-
-                for perm in permissions:
-                    perm.folder_path = (
-                        new_folder_path + perm.folder_path[len(old_folder_path) :]
-                    )
-                    perms_to_update.append(perm)
-
-                if perms_to_update:
-                    FolderPermission.objects.bulk_update(
-                        perms_to_update, ['folder_path']
-                    )
-
-            os.rename(full_old_path, full_new_path)
-
-        os.utime(full_new_path)
-        modified_str = datetime.fromtimestamp(os.path.getmtime(full_new_path)).strftime(
-            '%b %d, %Y %H:%M'
-        )
-        log_activity(
-            request.user,
-            f'{os.path.basename(old_path)} → {new_name}',
-            new_path,
-            'rename',
-            request.META.get('REMOTE_ADDR'),
-        )
-        return JsonResponse(
-            {
-                'success': True,
-                'new_path': to_url_path(new_path),
-                'modified': modified_str,
-                **get_item_urls(new_path, os.path.isdir(full_new_path)),
-            }
-        )
-
-    except OSError:
-        logger.exception("Rename failed for %s", old_path)
-        return JsonResponse({'error': 'Rename failed'}, status=500)
+    modified_str = timezone.localtime(item.updated_at).strftime('%b %d, %Y %H:%M')
+    log_activity(
+        request.user,
+        f'{os.path.basename(old_path)} → {new_name}',
+        new_path,
+        'rename',
+        request.META.get('REMOTE_ADDR'),
+    )
+    return JsonResponse(
+        {
+            'success': True,
+            'new_path': to_url_path(new_path),
+            'modified': modified_str,
+            **get_item_urls(new_path, is_folder),
+        }
+    )
 
 
 @login_required
@@ -793,11 +620,14 @@ def bulk_download(request):
     file_paths = [normalize_path(p) for p in file_paths]
 
     # All-or-nothing: never hand out a zip that silently leaves files out
+    items = []
     for file_path in file_paths:
         if not has_permission(request.user, os.path.dirname(file_path), 'read'):
             raise PermissionDenied
-        if not os.path.exists(get_storage_path(file_path)):
+        item = filesystem.resolve(file_path)
+        if item is None:
             raise Http404('File not found')
+        items.append(item)
 
     zs = zipstream.ZipStream()
     total_size = 0
@@ -814,19 +644,24 @@ def bulk_download(request):
         return candidate
 
     # Selected items go at the top level of the zip, as they appear on screen
-    for file_path in file_paths:
-        full_path = get_storage_path(file_path)
-        top_name = unique_name(posixpath.basename(file_path))
-        if os.path.isfile(full_path):
-            zs.add_path(full_path, arcname=top_name)
-            total_size += os.path.getsize(full_path)
-        elif os.path.isdir(full_path):
-            for root, _, files in os.walk(full_path):
-                for filename in files:
-                    file_full = os.path.join(root, filename)
-                    rel = os.path.relpath(file_full, full_path).replace('\\', '/')
-                    zs.add_path(file_full, arcname=f'{top_name}/{rel}', recurse=False)
-                    total_size += os.path.getsize(file_full)
+    entries = []
+    for item in items:
+        top_name = unique_name(item.name)
+        if isinstance(item, Folder):
+            entries += [
+                (f'{top_name}/{rel}', file) for rel, file in filesystem.walk(item)
+            ]
+        else:
+            entries.append((top_name, item))
+
+    # Check before streaming: a missing file would break the zip halfway.
+    # A list, not a generator, so every missing file gets logged
+    if not all([is_on_disk(file) for _, file in entries]):
+        raise Http404('File not found')
+
+    for arcname, file in entries:
+        zs.add_path(file.file.path, arcname=arcname, recurse=False)
+        total_size += file.size
 
     current_folder = os.path.dirname(file_paths[0].rstrip('/\\')) or '/'
 
@@ -893,22 +728,22 @@ def file_preview(request, file_path):
     if not has_permission(request.user, os.path.dirname(file_path), 'read'):
         raise PermissionDenied
 
-    full_path = get_storage_path(file_path)
-
-    if not os.path.isfile(full_path):
+    file = filesystem.resolve_file(file_path)
+    if file is None or not is_on_disk(file):
         raise Http404('File not found')
+    full_path = file.file.path
 
     # Log once here so every preview type (docx/xlsx return early) is recorded
     log_activity(
         request.user,
-        os.path.basename(file_path),
+        file.name,
         file_path,
         'view',
         request.META.get('REMOTE_ADDR'),
-        os.path.getsize(full_path),
+        file.size,
     )
 
-    ext = os.path.splitext(full_path)[1].lower()
+    ext = posixpath.splitext(file.name)[1].lower()
     if ext == '.docx':
         try:
             with open(full_path, 'rb') as f:
@@ -984,13 +819,13 @@ def file_preview(request, file_path):
         response['Content-Security-Policy'] = 'sandbox'
         return response
 
-    content_type, _ = mimetypes.guess_type(full_path)
+    content_type, _ = mimetypes.guess_type(file.name)
     if ext in ('.csv', '.tsv', '.log', '.md'):
         content_type = 'text/plain; charset=utf-8'
     elif not content_type:
         content_type = 'application/octet-stream'
 
-    file_size = os.path.getsize(full_path)
+    file_size = file.size
     range_match = RANGE_HEADER_RE.fullmatch(request.META.get('HTTP_RANGE', ''))
 
     if range_match and (range_match.group(1) or range_match.group(2)):
@@ -1023,7 +858,7 @@ def file_preview(request, file_path):
     response['Accept-Ranges'] = 'bytes'
     if needs_sandbox(content_type):
         response['Content-Security-Policy'] = 'sandbox'
-    disposition = content_disposition_header(False, os.path.basename(file_path))
+    disposition = content_disposition_header(False, file.name)
     if disposition:
         response['Content-Disposition'] = disposition
 

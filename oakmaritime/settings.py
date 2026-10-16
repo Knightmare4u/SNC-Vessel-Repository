@@ -147,6 +147,11 @@ STORAGES = {
     'staticfiles': {
         'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
     },
+    # File contents, stored under random names (see filemanager.models.File)
+    'vessel': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+        'OPTIONS': {'location': FILE_STORAGE_ROOT},
+    },
 }
 
 LOG_DIR = BASE_DIR / 'logs'
