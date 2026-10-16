@@ -1,3 +1,4 @@
+import posixpath
 import uuid
 
 from django.conf import settings
@@ -74,9 +75,11 @@ def vessel_storage():
 def file_upload_to(instance, filename):
     # Stored under a random name; the real name lives in File.name. Uploads go
     # in 'objects', apart from the files imported where they already were, and
-    # the first two characters pick a subfolder so no folder gets too big.
+    # the first two characters pick a subfolder so no folder gets too big. The
+    # extension is kept so the file still opens straight from the shared folder.
     name = uuid.uuid4().hex
-    return f'objects/{name[:2]}/{name}'
+    extension = posixpath.splitext(filename)[1].lower()
+    return f'objects/{name[:2]}/{name}{extension}'
 
 
 class Folder(models.Model):
@@ -160,3 +163,8 @@ class File(models.Model):
 
     def __str__(self):
         return self.name
+
+    @property
+    def extension(self):
+        """Lowercased, with the dot, e.g. '.pdf'; '' if there is none."""
+        return posixpath.splitext(self.name)[1].lower()

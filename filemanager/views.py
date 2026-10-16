@@ -213,7 +213,6 @@ def file_browser(request, folder_path=''):
         folder_count += 1
 
     for file in files:
-        extension = posixpath.splitext(file.name)[1].lower()
         items.append(
             {
                 'name': file.name,
@@ -223,8 +222,8 @@ def file_browser(request, folder_path=''):
                 'size_bytes': file.size,
                 'modified': file.updated_at,
                 'created_at': file.created_at,
-                'extension': extension,
-                'icon': get_file_icon(extension),
+                'extension': file.extension,
+                'icon': get_file_icon(file.extension),
             }
         )
         total_size += file.size
@@ -458,8 +457,7 @@ def search_files(request):
 
     results = []
     for file in files.order_by('name'):
-        ext = posixpath.splitext(file.name)[1].lower()
-        if allowed_exts and ext not in allowed_exts:
+        if allowed_exts and file.extension not in allowed_exts:
             continue
 
         folder_path = folder_paths[file.folder_id]
@@ -479,8 +477,8 @@ def search_files(request):
                 'folder': folder_path,
                 'size': file.size,
                 'formatted_size': format_file_size(file.size),
-                'extension': ext,
-                'icon': get_file_icon(ext),
+                'extension': file.extension,
+                'icon': get_file_icon(file.extension),
                 'modified': file.updated_at.timestamp(),
                 'created': file.created_at.timestamp(),
                 **get_item_urls(rel_path, is_dir=False),
@@ -743,7 +741,7 @@ def file_preview(request, file_path):
         file.size,
     )
 
-    ext = posixpath.splitext(file.name)[1].lower()
+    ext = file.extension
     if ext == '.docx':
         try:
             with open(full_path, 'rb') as f:
@@ -780,23 +778,26 @@ def file_preview(request, file_path):
                         f'<div class="table-wrap"><table>{"".join(rows_html)}</table></div>'
                     )
             else:
-                wb = openpyxl.load_workbook(full_path, read_only=True, data_only=True)
-                # read_only keeps the file open; close it even if reading fails
-                try:
-                    for sheet_name in wb.sheetnames:
-                        ws = wb[sheet_name]
-                        rows_html = []
-                        for i, row in enumerate(ws.iter_rows(values_only=True)):
-                            if all(cell in ('', None) for cell in row):
-                                continue
-                            rows_html.append(f'<tr>{render_row(row, i)}</tr>')
+                # An open file, not the path: openpyxl checks a path's extension,
+                # and the stored name may have none or another one (e.g. renamed)
+                with open(full_path, 'rb') as f:
+                    wb = openpyxl.load_workbook(f, read_only=True, data_only=True)
+                    # read_only keeps reading the file; close it even if reading fails
+                    try:
+                        for sheet_name in wb.sheetnames:
+                            ws = wb[sheet_name]
+                            rows_html = []
+                            for i, row in enumerate(ws.iter_rows(values_only=True)):
+                                if all(cell in ('', None) for cell in row):
+                                    continue
+                                rows_html.append(f'<tr>{render_row(row, i)}</tr>')
 
-                        sheets_html.append(
-                            f'<h3>{escape(sheet_name)}</h3>'
-                            f'<div class="table-wrap"><table>{"".join(rows_html)}</table></div>'
-                        )
-                finally:
-                    wb.close()
+                            sheets_html.append(
+                                f'<h3>{escape(sheet_name)}</h3>'
+                                f'<div class="table-wrap"><table>{"".join(rows_html)}</table></div>'
+                            )
+                    finally:
+                        wb.close()
         except Exception:
             # Uploaded files are untrusted and the parsers raise many error types
             logger.exception("Preview failed for %s", full_path)
