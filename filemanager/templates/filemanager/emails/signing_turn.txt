@@ -1,0 +1,13 @@
+{% autoescape off %}Hello {{ recipient_name }},
+
+{% if waiting_days %}{{ filename }} has been waiting for your signature for {{ waiting_days }} day{{ waiting_days|pluralize }}.
+{{ sender_name }} asked you to sign it.
+{% else %}{{ sender_name }} has asked you to sign {{ filename }}.
+{% endif %}You are signer {{ signing_order }} of {{ signer_count }}.
+
+Sign the document here:
+{{ url }}
+
+--
+This is an automated message from SNSeaFiles. Please do not reply.
+{% endautoescape %}

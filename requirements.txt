@@ -16,3 +16,5 @@ gunicorn==26.0.0
 psycopg2-binary==2.9.10
 concurrent-log-handler==0.9.29
 zipstream-ng==1.9.2
+pypdf==6.20.1
+reportlab==4.5.1

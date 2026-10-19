@@ -1,0 +1,208 @@
+{% extends 'base.html' %}
+{% load static filemanager_tags %}
+
+{% block title %}Sign {{ signing_request.filename }} - SNSeaFiles{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'filemanager/css/signing.css' %}">
+{% endblock %}
+
+{% block content %}
+<div class="sg-layout">
+    {# pdf.js: same in every browser, scrolls on phones, and can show this signer's boxes #}
+    <div class="sg-sign-pages" id="pdf-pages">
+        <p class="sg-muted" data-pdf-loading>Loading document…</p>
+    </div>
+
+    <aside class="card">
+        <h2>Your turn to sign</h2>
+        <p class="sg-muted">{{ signing_request.filename }}</p>
+        <div class="sg-status">Order {{ signer.signing_order }} of {{ signer_count }} · {{ user|display_name }}</div>
+        {% if manual %}
+        <p>Please review the document. Your signature goes in the highlighted box{% if my_boxes|length > 1 %}, and today's date is filled in for you{% endif %}.</p>
+        {% else %}
+        <p>Please review the document. Your signature and today's date will be added to a signature page at the end of the PDF.</p>
+        {% endif %}
+
+        {% include 'filemanager/signing/_progress.html' with signed=signed_count total=signer_count %}
+
+        {% for error in form.non_field_errors %}<div class="alert alert-error sg-mt">{{ error }}</div>{% endfor %}
+        {% for error in form.signature_file.errors %}<div class="alert alert-error sg-mt">{{ error }}</div>{% endfor %}
+
+        <button type="button" class="btn btn-primary sg-btn-block sg-mt-lg" id="open-pad">✍ Sign document</button>
+    </aside>
+</div>
+
+<div class="sg-modal" id="pad-modal">
+    {# multipart: the Upload tab sends a file #}
+    <form method="post" enctype="multipart/form-data" class="sg-modal-box" id="sign-form">
+        {% csrf_token %}
+        {{ form.source }}
+        {{ form.signature }}
+        <h2>Sign document</h2>
+
+        <div class="sg-tabs" role="tablist" data-tabs>
+            {% if saved_signature_url %}<button type="button" class="sg-tab" role="tab" aria-selected="false" data-tab="saved"><span class="sg-tab-label" data-text="My signature">My signature</span></button>{% endif %}
+            <button type="button" class="sg-tab" role="tab" aria-selected="false" data-tab="drawn"><span class="sg-tab-label" data-text="Draw">Draw</span></button>
+            <button type="button" class="sg-tab" role="tab" aria-selected="false" data-tab="uploaded"><span class="sg-tab-label" data-text="Upload">Upload</span></button>
+        </div>
+
+        {% if saved_signature_url %}
+        <div role="tabpanel" data-panel="saved" hidden>
+            <div class="sg-saved"><img src="{{ saved_signature_url }}" alt="Your saved signature"></div>
+            <p class="sg-hint">To replace it, draw or upload a new one and tick "Save as my default signature".</p>
+        </div>
+        {% endif %}
+
+        <div role="tabpanel" data-panel="drawn" hidden>
+            <canvas id="pad" class="sg-pad" width="514" height="190"></canvas>
+            <p class="sg-hint">Use mouse, finger, or stylus. <button type="button" class="sg-link" id="clear-pad">Clear</button></p>
+        </div>
+
+        <div role="tabpanel" data-panel="uploaded" hidden>
+            <label class="sg-upload">
+                {{ form.signature_file }}
+                <span id="upload-preview">Click to choose a PNG or JPG<br><small>White backgrounds are removed automatically · max 2 MB</small></span>
+            </label>
+        </div>
+
+        <label class="sg-save" id="save-default">{{ form.save_as_default }} Save as my default signature</label>
+
+        <div class="sg-actions">
+            <button type="button" class="btn btn-outline" id="close-pad">Cancel</button>
+            <button type="submit" class="btn btn-primary">Confirm &amp; Sign</button>
+        </div>
+    </form>
+</div>
+{{ my_boxes|json_script:"my-boxes" }}
+{% endblock %}
+
+{% block extra_js %}
+<script type="module">
+import * as pdfjsLib from "{% static 'filemanager/vendor/pdfjs/pdf.min.mjs' %}";
+import { renderPdfPages, placeOnPage } from "{% static 'filemanager/js/pdf_pages.js' %}";
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = "{% static 'filemanager/vendor/pdfjs/pdf.worker.min.mjs' %}";
+
+const pagesEl = document.getElementById('pdf-pages');
+const boxes = JSON.parse(document.getElementById('my-boxes').textContent);
+const pageEls = await renderPdfPages(pdfjsLib, pagesEl, "{% url 'signing_pdf' signing_request.pk %}");
+
+let target = null;
+boxes.forEach((box) => {
+    const pageEl = pageEls[box.page - 1];
+    if (!pageEl) return;
+    if (box.field_type === 'signature') {
+        // Same as the side panel's button: opens the signature dialog
+        target = document.createElement('button');
+        target.type = 'button';
+        target.className = 'sg-target';
+        target.textContent = 'Click to sign';
+        target.addEventListener('click', () => document.getElementById('open-pad').click());
+        placeOnPage(target, pageEl, box);
+    } else {
+        const date = document.createElement('div');
+        date.className = 'sg-target sg-target-date';
+        date.textContent = 'Date (Auto-filled)';
+        placeOnPage(date, pageEl, box);
+    }
+});
+// Open on the page where this person signs
+target?.scrollIntoView({ block: 'center' });
+</script>
+<script>
+(function () {
+    const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
+    const modal = document.getElementById('pad-modal');
+    const form = document.getElementById('sign-form');
+    const source = document.getElementById('id_source');
+    const fileInput = document.getElementById('id_signature_file');
+    const preview = document.getElementById('upload-preview');
+    const canvas = document.getElementById('pad');
+    const ctx = canvas.getContext('2d');
+    let drawing = false;
+    let hasInk = false;
+
+    // Tab names match SignForm.Source, so the active tab is the source sent.
+    // State lives in aria-selected and hidden; the CSS only styles it.
+    function activate(name) {
+        form.querySelectorAll('[data-tab]').forEach((tab) => {
+            tab.setAttribute('aria-selected', String(tab.dataset.tab === name));
+        });
+        form.querySelectorAll('[data-panel]').forEach((panel) => {
+            panel.hidden = panel.dataset.panel !== name;
+        });
+        // Already the default, so nothing to save
+        document.getElementById('save-default').hidden = name === 'saved';
+        source.value = name;
+    }
+    form.querySelector('[data-tabs]').addEventListener('click', (event) => {
+        const tab = event.target.closest('[data-tab]');
+        if (tab) activate(tab.dataset.tab);
+    });
+    // Open on the saved signature when there is one
+    activate(form.querySelector('[data-tab]').dataset.tab);
+
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    function point(event) {
+        const rect = canvas.getBoundingClientRect();
+        return [
+            (event.clientX - rect.left) * canvas.width / rect.width,
+            (event.clientY - rect.top) * canvas.height / rect.height,
+        ];
+    }
+
+    canvas.addEventListener('pointerdown', (event) => {
+        drawing = true;
+        canvas.setPointerCapture(event.pointerId);
+        ctx.beginPath();
+        ctx.moveTo(...point(event));
+    });
+    canvas.addEventListener('pointermove', (event) => {
+        if (!drawing) return;
+        ctx.lineTo(...point(event));
+        ctx.stroke();
+        hasInk = true;
+    });
+    canvas.addEventListener('pointerup', () => { drawing = false; });
+
+    document.getElementById('clear-pad').addEventListener('click', () => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        hasInk = false;
+    });
+
+    fileInput.addEventListener('change', () => {
+        const file = fileInput.files[0];
+        if (!file) return;
+        if (file.size > MAX_UPLOAD_BYTES) {
+            alert('Please choose an image of 2 MB or smaller.');
+            fileInput.value = '';
+            return;
+        }
+        const img = document.createElement('img');
+        img.src = URL.createObjectURL(file);
+        img.alt = 'Signature to upload';
+        preview.replaceChildren(img);
+    });
+
+    document.getElementById('open-pad').addEventListener('click', () => modal.classList.add('open'));
+    document.getElementById('close-pad').addEventListener('click', () => modal.classList.remove('open'));
+
+    form.addEventListener('submit', (event) => {
+        if (source.value === 'drawn' && !hasInk) {
+            event.preventDefault();
+            alert('Please draw your signature first.');
+        } else if (source.value === 'uploaded' && !fileInput.files.length) {
+            event.preventDefault();
+            alert('Please choose an image to upload.');
+        } else if (source.value === 'drawn') {
+            // Transparent background: the server crops to the strokes
+            document.getElementById('id_signature').value = canvas.toDataURL('image/png');
+        }
+    });
+})();
+</script>
+{% endblock %}

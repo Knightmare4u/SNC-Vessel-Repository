@@ -223,6 +223,9 @@ __marimo__/
 vessel_files/
 vessel_files_archive/
 
+# Uploaded media: signing copies, signed PDFs, signature images (this project)
+/media/
+
 # Logs (this project)
 logs/
 

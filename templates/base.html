@@ -78,6 +78,55 @@
             background-color: var(--secondary-blue);
         }
 
+        .user-menu {
+            position: relative;
+        }
+
+        .user-menu summary {
+            list-style: none;
+            cursor: pointer;
+            padding: 0.5rem 1rem;
+            border-radius: 5px;
+            transition: background-color 0.3s;
+        }
+
+        .user-menu summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .user-menu summary:hover,
+        .user-menu[open] summary {
+            background-color: var(--secondary-blue);
+        }
+
+        .user-menu-items {
+            position: absolute;
+            right: 0;
+            top: calc(100% + 0.5rem);
+            min-width: 160px;
+            background: var(--white);
+            border-radius: 8px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+            padding: 0.4rem;
+            z-index: 100;
+        }
+
+        .user-menu-items button {
+            width: 100%;
+            text-align: left;
+            background: none;
+            border: none;
+            padding: 0.6rem 0.8rem;
+            border-radius: 5px;
+            color: #17212b;
+            font-size: 0.95rem;
+            cursor: pointer;
+        }
+
+        .user-menu-items button:hover {
+            background: var(--light-gray);
+        }
+
         .nav-toggle {
             display: none;
             flex-direction: column;
@@ -130,6 +179,33 @@
             .nav-links a:hover {
                 background-color: var(--secondary-blue);
             }
+
+            /* In the collapsed menu the items sit inline under the name */
+            .user-menu {
+                width: 100%;
+            }
+
+            .user-menu summary {
+                padding: 0.75rem 1rem;
+                border-radius: 0;
+            }
+
+            .user-menu-items {
+                position: static;
+                background: none;
+                box-shadow: none;
+                padding: 0;
+            }
+
+            /* .nav-links prefix: outranks the generic '.nav-links form button' rule above */
+            .nav-links .user-menu-items button {
+                color: var(--white);
+                padding-left: 2rem;
+            }
+
+            .user-menu-items button:hover {
+                background-color: var(--secondary-blue);
+            }
         }
         
         .container {
@@ -148,7 +224,9 @@
         
         .btn {
             padding: 0.75rem 1.5rem;
-            border: none;
+            /* Transparent, not none: outlined buttons (.btn-outline) colour this border,
+               so every button keeps the same height side by side */
+            border: 1px solid transparent;
             border-radius: 5px;
             cursor: pointer;
             font-size: 1rem;
@@ -210,6 +288,37 @@
             color: #991b1b;
             border: 1px solid #fecaca;
         }
+
+        /* Toasts stack upwards from the bottom, each fading out on its own */
+        #toast-container {
+            position: fixed;
+            bottom: 2rem;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.5rem;
+            pointer-events: none;
+            z-index: 9999;
+        }
+
+        .toast {
+            background: #1e293b;
+            color: #fff;
+            padding: 0.6rem 1.4rem;
+            border-radius: 999px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            opacity: 0;
+            transform: translateY(20px);
+            transition: opacity 0.2s, transform 0.2s;
+        }
+
+        .toast.show { opacity: 1; transform: translateY(0); }
+        /* Success keeps the default colour */
+        .toast-info { background: #2563eb; }
+        .toast-error { background: #dc2626; }
     </style>
     {% block extra_css %}{% endblock %}
 </head>
@@ -226,36 +335,67 @@
                 <span></span><span></span><span></span>
             </button>
             <div class="nav-links">
-                <span>Welcome, {{ user.username }}</span>
                 <a href="{% url 'dashboard' %}">Dashboard</a>
                 <a href="{% url 'file_browser' %}">File Browser</a>
+                <a href="{% url 'signing_list' %}">Signing</a>
                 {% if user.is_superuser %}
                 <a href="{% url 'admin:index' %}" target="_blank">Admin</a>
                 {% endif %}
-                <!-- Change this to a form for proper logout -->
-                <form method="post" action="{% url 'logout' %}" style="display: inline;">
-                    {% csrf_token %}
-                    <button type="submit" style="background: none; border: none; color: var(--white); cursor: pointer; padding: 0.5rem 1rem; font-size: 1rem;">
-                        Logout
-                    </button>
-                </form>
+                <details class="user-menu">
+                    <summary>{{ user.username }} ▾</summary>
+                    <div class="user-menu-items">
+                        <!-- A form: logout must be a POST -->
+                        <form method="post" action="{% url 'logout' %}">
+                            {% csrf_token %}
+                            <button type="submit">Logout</button>
+                        </form>
+                    </div>
+                </details>
             </div>
         </div>
     </nav>
+    <script>
+        // <details> closes on its own when the summary is clicked again; also close it on an outside click
+        document.addEventListener('click', (event) => {
+            document.querySelectorAll('.user-menu[open]').forEach((menu) => {
+                if (!menu.contains(event.target)) menu.removeAttribute('open');
+            });
+        });
+    </script>
     {% endif %}
     
     <div class="container">
-        {% if messages %}
-            {% for message in messages %}
-                <div class="alert alert-{{ message.tags }}">
-                    {{ message }}
-                </div>
-            {% endfor %}
-        {% endif %}
-        
         {% block content %}
         {% endblock %}
     </div>
+
+    <div id="toast-container"></div>
+    {# Messages from the view, shown as toasts by the script below #}
+    {% for message in messages %}
+        <template class="flash-message" data-tags="{{ message.tags }}">{{ message }}</template>
+    {% endfor %}
+    <script>
+        const TOAST_DURATION = 3500;
+
+        function showToast(message, type = 'default') {
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            // Errors are announced right away by screen readers, the rest politely
+            toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+            toast.textContent = message;
+            document.getElementById('toast-container').append(toast);
+            toast.offsetWidth;  // Lay it out hidden first, so adding .show animates in
+            toast.classList.add('show');
+            setTimeout(() => {
+                toast.classList.remove('show');
+                setTimeout(() => toast.remove(), 200);  // After the fade-out
+            }, TOAST_DURATION);
+        }
+
+        document.querySelectorAll('.flash-message').forEach((message) => {
+            showToast(message.content.textContent.trim(), message.dataset.tags);
+        });
+    </script>
 
     {% block extra_js %}{% endblock %}
 </body>

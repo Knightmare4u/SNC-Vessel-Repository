@@ -128,6 +128,22 @@ LOGOUT_REDIRECT_URL = '/'
 FILE_STORAGE_ROOT = config('FILE_STORAGE_ROOT', default=BASE_DIR / 'vessel_files')
 ARCHIVE_ROOT = config('ARCHIVE_ROOT', default=BASE_DIR / 'vessel_files' / 'ARCHIVE')
 
+# Site address for links in emails, which are sent without a request to build them from
+BASE_URL = config('BASE_URL', default='http://127.0.0.1')
+
+# Email (signing notifications)
+EMAIL_BACKEND = config(
+    'EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend'
+)
+EMAIL_HOST = config('EMAIL_HOST', default='localhost')
+EMAIL_PORT = config('EMAIL_PORT', default=25, cast=int)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=False, cast=bool)
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='webmaster@localhost')
+# Seconds; without it an unresponsive mail server blocks the sending thread forever
+EMAIL_TIMEOUT = config('EMAIL_TIMEOUT', default=30, cast=int)
+
 SECURE_SSL_REDIRECT = False
 CSRF_COOKIE_SECURE = False
 SESSION_COOKIE_SECURE = False

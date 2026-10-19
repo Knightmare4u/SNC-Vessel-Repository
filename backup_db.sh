@@ -23,3 +23,20 @@ else
     log "FAILED - pg_dump/gzip failed"
     exit 1
 fi
+
+# Uploaded files (signing copies, signed PDFs, signature images). The database
+# points at these files, so they are backed up together and restored together.
+# Done after the dump, so every file the dump refers to is in the archive.
+media_file="backups/media_${timestamp}.tar.gz"
+if [ ! -d media ]; then
+    log "SKIPPED - no media folder to back up"
+elif tar -czf "$media_file" media; then
+    size=$(du -h "$media_file" | cut -f1)
+    log "SUCCESS - media backup created: $media_file ($size)"
+    # keep only the last 30 days of backups, as for the database
+    find backups -name "media_*.tar.gz" -mtime +30 -delete
+else
+    rm -f "$media_file"
+    log "FAILED - media archive failed"
+    exit 1
+fi

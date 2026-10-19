@@ -1,13 +1,26 @@
 import posixpath
 
 from django import forms
-from django.contrib import admin
+from django.contrib import admin, messages
+from django.contrib.admin import helpers
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
+from django.db import transaction
+from django.template.response import TemplateResponse
 
-from .models import File, FileActivity, Folder, FolderPermission, UserProfile
+from .models import (
+    File,
+    FileActivity,
+    Folder,
+    FolderPermission,
+    Signer,
+    SigningActivity,
+    SigningRequest,
+    UserProfile,
+)
 from .services import filesystem
+from .services import signing as signing_service
 from .utils import format_file_size, get_storage_path, is_in_archive, normalize_path
 
 
@@ -273,12 +286,111 @@ class FileAdmin(ReadOnlyAdmin):
         return obj.file.name
 
 
+class SignerAdminForm(forms.ModelForm):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # A signature already made stays with the person who made it
+        if self.instance.status == Signer.Status.SIGNED:
+            self.fields['user'].disabled = True
+
+
+class SignerInline(admin.TabularInline):
+    """Only lets an admin replace who signs (e.g. someone who left). Order and
+    status are kept by the signing flow, so editing them could break it."""
+
+    model = Signer
+    form = SignerAdminForm
+    extra = 0
+    can_delete = False
+    fields = ['signing_order', 'user', 'status', 'signed_at']
+    readonly_fields = ['signing_order', 'status', 'signed_at']
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+class SigningActivityInline(admin.TabularInline):
+    model = SigningActivity
+    extra = 0
+    fields = ['created_at', 'actor', 'action', 'detail']
+    readonly_fields = fields
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+class SigningRequestAdmin(admin.ModelAdmin):
+    """Lets an admin repair a stuck request (e.g. replace a signer who left), or
+    reset it to undo the signing entirely."""
+
+    actions = ['reset_signing']
+
+    list_display = ['path', 'created_by', 'status', 'sent_at', 'completed_at']
+    list_select_related = ['created_by', 'file__folder']
+    list_filter = ['status']
+    search_fields = ['file__name', 'created_by__username']
+    readonly_fields = [
+        'created_by',
+        'file',
+        'original_file',
+        'original_sha',
+        'signed_file',
+        'signed_sha',
+        'created_at',
+        'sent_at',
+        'completed_at',
+    ]
+    inlines = [SignerInline, SigningActivityInline]
+
+    @admin.display(description='Path')
+    def path(self, obj):
+        return posixpath.join(filesystem.get_path(obj.file.folder), obj.file.name)
+
+    @admin.action(
+        description='Reset signing (restore the original file and delete the request)',
+        permissions=['delete'],
+    )
+    def reset_signing(self, request, queryset):
+        # Restoring overwrites files, so confirm first, as "Delete selected" does
+        if not request.POST.get('post'):
+            return TemplateResponse(
+                request,
+                'admin/filemanager/signingrequest/reset_confirmation.html',
+                {
+                    **self.admin_site.each_context(request),
+                    'title': 'Are you sure?',
+                    'opts': self.model._meta,
+                    'queryset': queryset,
+                    'action_checkbox_name': helpers.ACTION_CHECKBOX_NAME,
+                },
+            )
+
+        reset = 0
+        for signing_request in queryset:
+            try:
+                # log_deletions() must run before the delete; a failed reset
+                # rolls the log entry back with it
+                with transaction.atomic():
+                    self.log_deletions(
+                        request, SigningRequest.objects.filter(pk=signing_request.pk)
+                    )
+                    signing_service.reset(signing_request)
+            except ValidationError as e:
+                self.message_user(request, e.messages[0], messages.ERROR)
+            else:
+                reset += 1
+        if reset:
+            self.message_user(request, f'Reset {reset} signing request(s).')
+
+
 admin.site.unregister(User)
 admin.site.register(User, CustomUserAdmin)
 admin.site.register(FolderPermission, FolderPermissionAdmin)
 admin.site.register(FileActivity, FileActivityAdmin)
 admin.site.register(Folder, FolderAdmin)
 admin.site.register(File, FileAdmin)
+admin.site.register(SigningRequest, SigningRequestAdmin)
 
 # Custom admin site header
 admin.site.site_header = "SNSeaFile Administration"

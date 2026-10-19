@@ -1,0 +1,82 @@
+{% extends 'base.html' %}
+{% load static filemanager_tags %}
+
+{% block title %}Signing - SNSeaFiles{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'filemanager/css/signing.css' %}">
+{% endblock %}
+
+{% block content %}
+<div class="sg-wrap">
+    <h1>Signing</h1>
+
+    <div class="card">
+        <nav class="sg-tabs">
+            {% for item in tabs %}
+            <a href="?tab={{ item.key }}" class="sg-tab"{% if item.key == tab %} aria-current="page"{% endif %}>
+                <span class="sg-tab-label" data-text="{{ item.label }}">{{ item.label }}</span><span class="sg-count">{{ item.count }}</span>
+            </a>
+            {% endfor %}
+        </nav>
+
+        {% if page.object_list %}
+        <table class="sg-table">
+            <thead>
+                <tr>
+                    <th>Document</th>
+                    <th>Status</th>
+                    <th class="sg-hide-mobile">Sent by</th>
+                    <th>Progress</th>
+                    <th class="sg-hide-mobile">Sent on</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for signing_request in page.object_list %}
+                <tr>
+                    <td class="sg-doc">
+                        <span class="sg-filename" title="{{ signing_request.filename }}">📕 {{ signing_request.filename }}</span>
+                    </td>
+                    <td><span class="sg-badge sg-badge-{{ signing_request.status }}">{{ signing_request.get_status_display }}</span></td>
+                    <td class="sg-hide-mobile">{{ signing_request.created_by|display_name }}</td>
+                    <td>
+                        <div class="sg-progress"><div style="width: {% widthratio signing_request.signed_count signing_request.signer_count 100 %}%;"></div></div>
+                        <span class="sg-muted sg-small">{{ signing_request.signed_count }} of {{ signing_request.signer_count }} signed</span>
+                    </td>
+                    <td class="sg-hide-mobile">{{ signing_request.sent_at|date:"Y-m-d"|default:"—" }}</td>
+                    <td class="sg-right">
+                        {% if tab == 'to_sign' %}
+                            <a class="btn btn-primary btn-sm" href="{% url 'signing_sign' signing_request.pk %}">✍ Sign</a>
+                        {% elif signing_request.status == 'draft' %}
+                            <a class="btn btn-secondary btn-sm" href="{% url 'signing_fields' signing_request.pk %}">Continue</a>
+                        {% else %}
+                            <a class="btn btn-secondary btn-sm" href="{% url 'signing_detail' signing_request.pk %}">View</a>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {% if page.has_other_pages %}
+        <div class="sg-pages">
+            {% if page.has_previous %}<a class="btn btn-outline btn-sm" href="?tab={{ tab }}&amp;page={{ page.previous_page_number }}">← Previous</a>{% endif %}
+            <span class="sg-muted">Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+            {% if page.has_next %}<a class="btn btn-outline btn-sm" href="?tab={{ tab }}&amp;page={{ page.next_page_number }}">Next →</a>{% endif %}
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="sg-empty">
+            {% if tab == 'to_sign' %}
+                Nothing is waiting for your signature.
+            {% elif tab == 'sent' %}
+                You have not sent any documents for signing. Use ✍️ next to a PDF in the File Browser to start.
+            {% else %}
+                You are not on the notify list of any signing request.
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

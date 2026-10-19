@@ -154,10 +154,8 @@ def rename_file(file, new_name):
         raise ValidationError(NAME_TAKEN)
 
 
-def delete_folder(folder, user):
-    """Soft-delete folder and everything in it with one timestamp, so they can be
-    restored together."""
-    path = get_path(folder)
+def get_subtree_ids(folder):
+    """Ids of folder and every active folder under it."""
     folder_ids, level = [folder.id], [folder.id]
     while level:
         level = list(
@@ -166,6 +164,14 @@ def delete_folder(folder, user):
             ).values_list('id', flat=True)
         )
         folder_ids += level
+    return folder_ids
+
+
+def delete_folder(folder, user):
+    """Soft-delete folder and everything in it with one timestamp, so they can be
+    restored together."""
+    path = get_path(folder)
+    folder_ids = get_subtree_ids(folder)
 
     now = timezone.now()
     with transaction.atomic():

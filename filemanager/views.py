@@ -19,6 +19,8 @@ from django.core.exceptions import (
     SuspiciousFileOperation,
     ValidationError,
 )
+from django.core.paginator import Paginator
+from django.db import transaction
 from django.db.models import Count, Q
 from django.http import (
     FileResponse,
@@ -27,7 +29,7 @@ from django.http import (
     JsonResponse,
     StreamingHttpResponse,
 )
-from django.shortcuts import redirect, render
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.html import escape
@@ -36,9 +38,22 @@ from django.utils.text import get_valid_filename
 from django.views.decorators.http import require_POST
 from xlrd.xldate import xldate_as_datetime
 
-from .models import File, FileActivity, Folder, UploadSession, UserProfile
+from .forms import SignerFormSet, SignForm, SigningCreateForm, SigningFieldsForm
+from .models import (
+    File,
+    FileActivity,
+    Folder,
+    Signer,
+    SigningActivity,
+    SigningField,
+    SigningRequest,
+    UploadSession,
+    UserProfile,
+)
 from .services import filesystem
+from .services import signing as signing_service
 from .utils import (
+    display_name,
     format_file_size,
     get_storage_path,
     get_user_permissions,
@@ -53,6 +68,7 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 ARCHIVE_READ_ONLY = 'The archive is read-only'
+SIGNING_LOCKED = 'This file, or a file in this folder, has been sent for signing and cannot be deleted'
 
 FILE_TYPE_CATEGORIES = {
     'document': ['.doc', '.docx', '.txt'],
@@ -83,6 +99,17 @@ FILE_ICONS = {
         for ext in exts
     },
     '.txt': '📄',  # Plain text, not a Word document
+}
+
+# How many file names the activity log lists for a zip download
+DOWNLOAD_LOG_MAX_NAMES = 5
+
+RANGE_HEADER_RE = re.compile(r'bytes=(\d*)-(\d*)')
+
+SIGNING_LIST_TABS = {
+    'to_sign': 'Waiting for me',
+    'sent': 'Sent by me',
+    'notified': 'Notified',
 }
 
 
@@ -185,6 +212,18 @@ def file_browser(request, folder_path=''):
     )
     files = folder.files.filter(deleted_at__isnull=True)
 
+    # A file sent for signing links to its request instead of starting a new one
+    signing_requests = {
+        r.file_id: r for r in SigningRequest.objects.filter(file__in=files)
+    }
+    visible_requests = set()
+    if signing_requests:
+        visible_requests = set(
+            signing_service.visible_requests(request.user)
+            .filter(pk__in=[r.pk for r in signing_requests.values()])
+            .values_list('pk', flat=True)
+        )
+
     # Get files and folders
     items = []
     total_size = 0
@@ -213,6 +252,7 @@ def file_browser(request, folder_path=''):
         folder_count += 1
 
     for file in files:
+        signing_request = signing_requests.get(file.id)
         items.append(
             {
                 'name': file.name,
@@ -224,6 +264,11 @@ def file_browser(request, folder_path=''):
                 'created_at': file.created_at,
                 'extension': file.extension,
                 'icon': get_file_icon(file.extension),
+                'signing_request': signing_request,
+                'signing_visible': (
+                    signing_request is not None
+                    and signing_request.pk in visible_requests
+                ),
             }
         )
         total_size += file.size
@@ -408,12 +453,17 @@ def delete_file(request):
     if item is None:
         return JsonResponse({'error': 'File/folder not found'}, status=404)
 
-    if isinstance(item, Folder):
-        filesystem.delete_folder(item, request.user)
-        file_size = 0
-    else:
-        filesystem.delete_file(item, request.user)
-        file_size = item.size
+    if signing_service.is_locked(item):
+        return JsonResponse({'error': SIGNING_LOCKED}, status=403)
+
+    with transaction.atomic():
+        signing_service.delete_drafts(item)
+        if isinstance(item, Folder):
+            filesystem.delete_folder(item, request.user)
+            file_size = 0
+        else:
+            filesystem.delete_file(item, request.user)
+            file_size = item.size
 
     log_activity(
         request.user,
@@ -663,11 +713,12 @@ def bulk_download(request):
 
     current_folder = os.path.dirname(file_paths[0].rstrip('/\\')) or '/'
 
-    MAX_NAMES_SHOWN = 5
-    names = [os.path.basename(p.rstrip('/\\')) for p in file_paths[:MAX_NAMES_SHOWN]]
+    names = [
+        os.path.basename(p.rstrip('/\\')) for p in file_paths[:DOWNLOAD_LOG_MAX_NAMES]
+    ]
     name_summary = ', '.join(names)
-    if len(file_paths) > MAX_NAMES_SHOWN:
-        name_summary += f', +{len(file_paths) - MAX_NAMES_SHOWN} more'
+    if len(file_paths) > DOWNLOAD_LOG_MAX_NAMES:
+        name_summary += f', +{len(file_paths) - DOWNLOAD_LOG_MAX_NAMES} more'
 
     log_activity(
         request.user,
@@ -678,12 +729,14 @@ def bulk_download(request):
         total_size,
     )
 
+    # A single folder is named after itself, as when zipping one on Windows
+    zip_name = 'download.zip'
+    if len(items) == 1 and isinstance(items[0], Folder):
+        zip_name = f'{items[0].name}.zip'
+
     response = StreamingHttpResponse(zs, content_type='application/zip')
-    response['Content-Disposition'] = 'attachment; filename="download.zip"'
+    response['Content-Disposition'] = content_disposition_header(True, zip_name)
     return response
-
-
-RANGE_HEADER_RE = re.compile(r'bytes=(\d*)-(\d*)')
 
 
 def needs_sandbox(content_type):
@@ -864,3 +917,313 @@ def file_preview(request, file_path):
         response['Content-Disposition'] = disposition
 
     return response
+
+
+# Signing
+
+
+def get_visible_request(user, pk):
+    """The request if the user created it, signs it or is notified of it; 404
+    otherwise, so other users cannot tell whether it exists."""
+    return get_object_or_404(signing_service.visible_requests(user), pk=pk)
+
+
+@login_required
+def signing_list(request):
+    user = request.user
+    tab_querysets = {
+        # A subquery, not filter(signers__...): that join would be shared with
+        # the signer counts below, so they would only count this user's row
+        'to_sign': SigningRequest.objects.filter(
+            pk__in=Signer.objects.filter(
+                user=user,
+                status=Signer.Status.PENDING,
+                signing_request__status=SigningRequest.Status.IN_PROGRESS,
+            ).values('signing_request')
+        ),
+        'sent': SigningRequest.objects.filter(created_by=user),
+        'notified': SigningRequest.objects.filter(notify_users=user).exclude(
+            status=SigningRequest.Status.DRAFT
+        ),
+    }
+    tabs = dict(SIGNING_LIST_TABS)
+    # Only people allowed to start signing requests have sent any
+    if not user.has_perm(signing_service.REQUEST_SIGNATURES):
+        del tabs['sent']
+    tab = request.GET.get('tab')
+    if tab not in tabs:
+        tab = 'to_sign'
+
+    signing_requests = (
+        tab_querysets[tab]
+        .select_related('created_by', 'file')
+        .annotate(
+            signer_count=Count('signers', distinct=True),
+            signed_count=Count(
+                'signers',
+                filter=Q(signers__status=Signer.Status.SIGNED),
+                distinct=True,
+            ),
+        )
+        .order_by('-created_at')
+    )
+    page = Paginator(signing_requests, 10).get_page(request.GET.get('page'))
+
+    return render(
+        request,
+        'filemanager/signing/list.html',
+        {
+            'tab': tab,
+            'tabs': [
+                {
+                    'key': key,
+                    'label': label,
+                    'count': tab_querysets[key].count(),
+                }
+                for key, label in tabs.items()
+            ],
+            'page': page,
+        },
+    )
+
+
+@login_required
+def signing_create(request):
+    if request.method == 'POST':
+        form = SigningCreateForm(request.POST, user=request.user)
+        formset = SignerFormSet(request.POST, prefix='signers')
+        if form.is_valid() and formset.is_valid():
+            signers = [f.cleaned_data['user'] for f in formset.ordered_forms]
+            details = {
+                'source_path': form.cleaned_data['source_path'],
+                'signers': signers,
+                'notify_users': list(form.cleaned_data['notify_users']),
+                'actor': request.user,
+            }
+            manual = (
+                form.cleaned_data['placement_mode']
+                == SigningRequest.PlacementMode.MANUAL
+            )
+            try:
+                if manual:
+                    # Saved as a draft; it is sent once the boxes are placed
+                    signing_request = signing_service.create_draft(
+                        placement_mode=SigningRequest.PlacementMode.MANUAL, **details
+                    )
+                else:
+                    signing_request = signing_service.create_and_send(**details)
+            except ValidationError as e:
+                form.add_error(None, e)
+            else:
+                if manual:
+                    return redirect('signing_fields', pk=signing_request.pk)
+                return _sent_redirect(request, signing_request)
+        source_path = form.data.get('source_path', '')
+    else:
+        source_path = normalize_path(request.GET.get('path', ''))
+        try:
+            signing_service.validate_source(request.user, source_path)
+        except ValidationError as e:
+            messages.error(request, e.messages[0])
+            return redirect('file_browser')
+        form = SigningCreateForm(
+            initial={'source_path': source_path}, user=request.user
+        )
+        # The sender usually signs first; they can change or remove the row
+        formset = SignerFormSet(prefix='signers', initial=[{'user': request.user.pk}])
+
+    folder = to_url_path(posixpath.dirname(source_path))
+    return render(
+        request,
+        'filemanager/signing/create.html',
+        {
+            'form': form,
+            'formset': formset,
+            'filename': posixpath.basename(source_path),
+            'cancel_url': (
+                reverse('file_browser', args=[folder])
+                if folder
+                else reverse('file_browser')
+            ),
+        },
+    )
+
+
+def _sent_redirect(request, signing_request):
+    # Nothing has been sent to anyone yet when the sender signs first
+    if signing_request.signers.first().user == request.user:
+        messages.success(request, 'Signing set up. You are the first to sign.')
+    else:
+        messages.success(request, 'Signing request sent.')
+    return redirect('signing_detail', pk=signing_request.pk)
+
+
+@login_required
+def signing_fields(request, pk):
+    """Step 2 of manual placement: drag a box onto the PDF for each signer."""
+    signing_request = get_object_or_404(
+        SigningRequest,
+        pk=pk,
+        created_by=request.user,
+        status=SigningRequest.Status.DRAFT,
+    )
+    signers = list(signing_request.signers.select_related('user'))
+
+    if request.method == 'POST':
+        form = SigningFieldsForm(request.POST)
+        if form.is_valid():
+            try:
+                # Saved even if sending fails, so the boxes are not lost
+                signing_service.save_fields(signing_request, form.cleaned_data['boxes'])
+                signing_service.send(signing_request, request.user)
+            except ValidationError as e:
+                form.add_error(None, e)
+            else:
+                return _sent_redirect(request, signing_request)
+    else:
+        form = SigningFieldsForm()
+
+    return render(
+        request,
+        'filemanager/signing/fields.html',
+        {
+            'signing_request': signing_request,
+            'form': form,
+            'signers_data': [
+                {
+                    'id': signer.pk,
+                    'order': signer.signing_order,
+                    'name': display_name(signer.user),
+                }
+                for signer in signers
+            ],
+            'boxes_data': [
+                {
+                    'signer': field.signer_id,
+                    'field_type': field.field_type,
+                    'page': field.page,
+                    'x': field.x,
+                    'y': field.y,
+                    'width': field.width,
+                    'height': field.height,
+                }
+                for field in SigningField.objects.filter(signer__in=signers)
+            ],
+        },
+    )
+
+
+@login_required
+@require_POST
+def signing_delete(request, pk):
+    signing_request = get_object_or_404(
+        SigningRequest,
+        pk=pk,
+        created_by=request.user,
+        status=SigningRequest.Status.DRAFT,
+    )
+    folder = to_url_path(filesystem.get_path(signing_request.file.folder))
+    signing_service.delete_draft(signing_request)
+    messages.success(request, 'Draft deleted.')
+    return redirect(
+        reverse('file_browser', args=[folder]) if folder else reverse('file_browser')
+    )
+
+
+@login_required
+def signing_sign(request, pk):
+    signing_request = get_visible_request(request.user, pk)
+    signer = signing_request.signers.filter(user=request.user).first()
+
+    # Participants who cannot sign right now get told why, instead of a 404
+    if signing_request.status != SigningRequest.Status.IN_PROGRESS:
+        reason = 'This document is no longer waiting for signatures.'
+    elif signer is None:
+        reason = 'You are not a signer of this document.'
+    elif signer.status == Signer.Status.SIGNED:
+        reason = 'You have already signed this document.'
+    elif signer.status == Signer.Status.WAITING:
+        reason = 'It is not your turn to sign yet.'
+    else:
+        reason = None
+    if reason:
+        messages.info(request, reason)
+        return redirect('signing_detail', pk=signing_request.pk)
+
+    if request.method == 'POST':
+        form = SignForm(request.POST, request.FILES, user=request.user)
+        if form.is_valid():
+            try:
+                signing_service.sign(
+                    signing_request=signing_request,
+                    actor=request.user,
+                    signature_png=form.cleaned_data['signature_png'],
+                    save_as_default=form.cleaned_data['save_as_default'],
+                )
+            except ValidationError as e:
+                form.add_error(None, e)
+            else:
+                messages.success(request, 'Your signature has been applied.')
+                return redirect('signing_detail', pk=signing_request.pk)
+    else:
+        form = SignForm(user=request.user)
+
+    return render(
+        request,
+        'filemanager/signing/sign.html',
+        {
+            'signing_request': signing_request,
+            'signer': signer,
+            'signer_count': signing_request.signers.count(),
+            'signed_count': signing_request.signers.filter(
+                status=Signer.Status.SIGNED
+            ).count(),
+            'form': form,
+            'saved_signature_url': signing_service.saved_signature_data_url(
+                request.user
+            ),
+            'manual': signing_request.placement_mode
+            == SigningRequest.PlacementMode.MANUAL,
+            # Only this signer's boxes; other people's are not shown
+            'my_boxes': list(
+                signer.fields.values('field_type', 'page', 'x', 'y', 'width', 'height')
+            ),
+        },
+    )
+
+
+@login_required
+def signing_detail(request, pk):
+    signing_request = get_visible_request(request.user, pk)
+    signers = list(signing_request.signers.select_related('user'))
+    signed_count = sum(s.status == Signer.Status.SIGNED for s in signers)
+    completed = signing_request.activities.filter(
+        action=SigningActivity.Action.COMPLETED
+    ).first()
+
+    return render(
+        request,
+        'filemanager/signing/detail.html',
+        {
+            'signing_request': signing_request,
+            'signers': signers,
+            'signed_count': signed_count,
+            'my_turn': any(
+                s.user == request.user and s.status == Signer.Status.PENDING
+                for s in signers
+            ),
+            'written_back': completed.detail.get('written_back') if completed else None,
+        },
+    )
+
+
+@login_required
+def signing_pdf(request, pk):
+    signing_request = get_visible_request(request.user, pk)
+    # The signed copy holds every signature so far; before anyone signs, the original
+    pdf = signing_request.signed_file or signing_request.original_file
+    return FileResponse(
+        pdf.open('rb'),
+        content_type='application/pdf',
+        filename=signing_request.filename,
+    )

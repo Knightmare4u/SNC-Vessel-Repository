@@ -1,0 +1,55 @@
+{% extends 'base.html' %}
+{% load static filemanager_tags %}
+
+{% block title %}{{ signing_request.filename }} - Signing - SNSeaFiles{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'filemanager/css/signing.css' %}">
+{% endblock %}
+
+{% block content %}
+<div class="sg-wrap">
+    <div class="card">
+        {% if signing_request.status == 'completed' %}
+            <h1>Signing completed</h1>
+            <p class="sg-muted">{{ signing_request.filename }} · completed {{ signing_request.completed_at|date:"Y-m-d" }}</p>
+            {% if not written_back %}
+                <div class="alert alert-error sg-mt">The original file was changed or removed during signing, so it was not replaced. Download the signed PDF below.</div>
+            {% endif %}
+        {% elif signing_request.status == 'draft' %}
+            <h1>Draft</h1>
+            <p class="sg-muted">{{ signing_request.filename }} · not sent yet</p>
+        {% else %}
+            <h1>Signing in progress</h1>
+            <p class="sg-muted">{{ signing_request.filename }} · sent by {{ signing_request.created_by|display_name }}</p>
+        {% endif %}
+
+        {% include 'filemanager/signing/_progress.html' with signed=signed_count total=signers|length %}
+
+        <table class="sg-table">
+            <thead>
+                <tr><th>Order</th><th>Recipient</th><th>Status</th><th>Signed on</th></tr>
+            </thead>
+            <tbody>
+                {% for signer in signers %}
+                <tr>
+                    <td>{{ signer.signing_order }}</td>
+                    <td><b>{{ signer.user|display_name }}</b></td>
+                    <td><span class="sg-badge sg-badge-{{ signer.status }}">{{ signer.get_status_display }}</span></td>
+                    <td>{{ signer.signed_at|date:"Y-m-d"|default:"—" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <div class="sg-nav sg-mt-lg">
+            <a class="btn btn-secondary" href="{% url 'signing_pdf' signing_request.pk %}" target="_blank" rel="noopener">View PDF</a>
+            {% if signing_request.status == 'draft' %}
+                <a class="btn btn-primary" href="{% url 'signing_fields' signing_request.pk %}">Continue</a>
+            {% elif my_turn %}
+                <a class="btn btn-primary" href="{% url 'signing_sign' signing_request.pk %}">✍ Sign now</a>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,183 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Request Signatures - SNSeaFiles{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'filemanager/vendor/select2/select2.min.css' %}">
+{# After select2.css, so signing.css can restyle the dropdowns #}
+<link rel="stylesheet" href="{% static 'filemanager/css/signing.css' %}">
+{% endblock %}
+
+{% block content %}
+<div class="sg-wrap">
+    <h1>Who needs to sign?</h1>
+    <p class="sg-muted">Signers sign one after another, in the order listed.</p>
+
+    <div class="card sg-mt-lg">
+        <b>📕 {{ filename }}</b>
+    </div>
+
+    <form method="post" id="signing-form">
+        {% csrf_token %}
+        {{ form.source_path }}
+        {% for error in form.non_field_errors %}<div class="alert alert-error">{{ error }}</div>{% endfor %}
+        {% for error in formset.non_form_errors %}<div class="alert alert-error">{{ error }}</div>{% endfor %}
+
+        <div class="card">
+            <h2>Signers</h2>
+            {{ formset.management_form }}
+            <div id="signer-list">
+                {% for signer_form in formset %}
+                <div class="sg-signer" data-signer-row>
+                    <span class="sg-handle" data-drag-handle title="Drag to reorder">☰</span>
+                    <span class="sg-num" data-order-number></span>
+                    <div class="sg-grow">
+                        {{ signer_form.user }}
+                        {% for error in signer_form.user.errors %}<div class="sg-error">{{ error }}</div>{% endfor %}
+                    </div>
+                    {{ signer_form.ORDER }}{{ signer_form.DELETE }}
+                    <button type="button" class="sg-remove" data-remove title="Remove signer" aria-label="Remove signer">✕</button>
+                </div>
+                {% endfor %}
+            </div>
+            {# Django's empty_form; "__prefix__" becomes the new form's index #}
+            <template id="signer-template">
+                <div class="sg-signer" data-signer-row>
+                    <span class="sg-handle" data-drag-handle title="Drag to reorder">☰</span>
+                    <span class="sg-num" data-order-number></span>
+                    <div class="sg-grow">{{ formset.empty_form.user }}</div>
+                    {{ formset.empty_form.ORDER }}{{ formset.empty_form.DELETE }}
+                    <button type="button" class="sg-remove" data-remove title="Remove signer" aria-label="Remove signer">✕</button>
+                </div>
+            </template>
+            <button type="button" class="btn btn-secondary btn-sm" id="add-signer">＋ Add signer</button>
+        </div>
+
+        <div class="card">
+            <h2>Notify when completed</h2>
+            <p class="sg-muted sg-mb">These people get an email when everyone has signed.</p>
+            {{ form.notify_users }}
+        </div>
+
+        <div class="card">
+            <h2>Where should signatures go?</h2>
+            <div class="sg-choices">{{ form.placement_mode }}</div>
+        </div>
+
+        <div class="sg-nav">
+            <a class="btn btn-outline" href="{{ cancel_url }}">Cancel</a>
+            <button type="submit" class="btn btn-primary" id="submit-button">Submit</button>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'filemanager/vendor/jquery/jquery.min.js' %}"></script>
+<script src="{% static 'filemanager/vendor/select2/select2.full.min.js' %}"></script>
+<script>
+(function () {
+    const list = document.getElementById('signer-list');
+    const totalForms = document.getElementById('id_signers-TOTAL_FORMS');
+    const maxForms = parseInt(document.getElementById('id_signers-MAX_NUM_FORMS').value, 10);
+    const template = document.getElementById('signer-template').innerHTML;
+
+    $('#id_notify_users').select2({ width: '100%', placeholder: 'Search people to notify' });
+
+    function makeSearchable(row) {
+        $(row.querySelector('select')).select2({ width: '100%', placeholder: 'Search for a signer' });
+    }
+
+    // Removed rows stay in the form (hidden, DELETE set) so form indexes never change
+    function visibleRows() {
+        return [...list.querySelectorAll('[data-signer-row]:not([hidden])')];
+    }
+
+    // The formset's ORDER fields carry the signing order (can_order=True)
+    function updateOrder() {
+        visibleRows().forEach((row, i) => {
+            row.querySelector('[data-order-number]').textContent = i + 1;
+            row.querySelector('input[name$="-ORDER"]').value = i + 1;
+        });
+    }
+
+    document.getElementById('add-signer').addEventListener('click', () => {
+        if (visibleRows().length >= maxForms) return;
+        const index = Number(totalForms.value);
+        list.insertAdjacentHTML('beforeend', template.replace(/__prefix__/g, index));
+        totalForms.value = index + 1;
+        makeSearchable(list.lastElementChild);
+        updateOrder();
+    });
+
+    list.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-remove]');
+        if (button && visibleRows().length > 1) {
+            const row = button.closest('[data-signer-row]');
+            row.querySelector('input[name$="-DELETE"]').value = 'on';
+            row.hidden = true;
+            updateOrder();
+        }
+    });
+
+    // Drag by the handle. Pointer events cover mouse, touch and stylus.
+    // Move/up are on document, not via pointer capture: moving the row in the
+    // DOM would release the capture mid-drag.
+    let dragging = null;
+
+    list.addEventListener('pointerdown', (event) => {
+        const handle = event.target.closest('[data-drag-handle]');
+        if (!handle) return;
+        event.preventDefault();  // No text selection while dragging
+        dragging = handle.closest('[data-signer-row]');
+        dragging.classList.add('sg-dragging');
+    });
+
+    document.addEventListener('pointermove', (event) => {
+        if (!dragging) return;
+        // Drop before the first row whose middle is below the pointer
+        const next = visibleRows().find((row) => {
+            if (row === dragging) return false;
+            const rect = row.getBoundingClientRect();
+            return event.clientY < rect.top + rect.height / 2;
+        });
+        list.insertBefore(dragging, next || null);
+    });
+
+    function endDrag() {
+        if (!dragging) return;
+        dragging.classList.remove('sg-dragging');
+        dragging = null;
+        updateOrder();
+    }
+    document.addEventListener('pointerup', endDrag);
+    document.addEventListener('pointercancel', endDrag);
+
+    // A single signer is allowed, but often means someone was forgotten
+    // Manual placement continues to a second step instead of sending now
+    const submitButton = document.getElementById('submit-button');
+    function updateSubmitLabel() {
+        const manual = document.querySelector('input[name="placement_mode"]:checked').value === 'manual';
+        submitButton.textContent = manual ? 'Next: place signatures' : 'Submit';
+    }
+    document.querySelectorAll('input[name="placement_mode"]').forEach((radio) => {
+        radio.addEventListener('change', updateSubmitLabel);
+    });
+    updateSubmitLabel();
+
+    document.getElementById('signing-form').addEventListener('submit', (event) => {
+        if (visibleRows().length === 1 && !confirm('Only one signer is set. Submit anyway?')) {
+            event.preventDefault();
+        }
+    });
+
+    // After a failed submit, rows removed before it come back with DELETE set
+    list.querySelectorAll('input[name$="-DELETE"]').forEach((input) => {
+        if (input.value === 'on') input.closest('[data-signer-row]').hidden = true;
+    });
+    visibleRows().forEach(makeSearchable);
+    updateOrder();
+})();
+</script>
+{% endblock %}

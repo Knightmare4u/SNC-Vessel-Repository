@@ -40,34 +40,84 @@
     width: 10px; height: 2px;
     background: #fff; border-radius: 1px;
 }
-.copy-link-btn {
-    background: #f97316 !important;
-    color: #fff !important;
-    border: 1.5px solid #f97316 !important;
-    border-radius: 5px;
-    padding: 0.25rem 0.5rem;
+/* Row actions: one "⋯" menu per row */
+/* Download, Copy link and "⋯" as line icons; Download pale blue (main action),
+   Copy link pale grey, "⋯" plain */
+.row-action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: #4b5563;
+    vertical-align: middle;
     cursor: pointer;
     font-size: 1rem;
-    transition: background 0.15s;
+    transition: background-color 0.15s, color 0.15s;
 }
-.copy-link-btn:hover { background: #ea580c !important; border-color: #ea580c !important; }
-#copy-toast {
+.row-action-btn svg { display: block; width: 18px; height: 18px; }
+.row-action-btn:hover,
+.row-action-btn[aria-expanded="true"] { background: #e5e7eb; color: #1f2937; }
+.row-action-btn.download-btn,
+.row-action-btn.download-folder-btn { background: #eff6ff; color: var(--secondary-blue); }
+.row-action-btn.download-btn:hover,
+.row-action-btn.download-folder-btn:hover { background: #dbeafe; color: var(--secondary-blue); }
+.row-action-btn.copy-link-btn,
+.row-action-btn.copy-folder-link-btn { background: #f3f4f6; }
+.row-action-btn.copy-link-btn:hover,
+.row-action-btn.copy-folder-link-btn:hover { background: #e5e7eb; }
+/* Fixed, not absolute: the table's scroll container would clip the menu */
+.row-menu {
+    display: none;
     position: fixed;
-    bottom: 2rem;
-    left: 50%;
-    transform: translateX(-50%) translateY(20px);
-    background: #1e293b;
-    color: #fff;
-    padding: 0.6rem 1.4rem;
-    border-radius: 999px;
-    font-size: 0.875rem;
-    font-weight: 500;
-    opacity: 0;
-    transition: opacity 0.2s, transform 0.2s;
-    pointer-events: none;
-    z-index: 9999;
+    z-index: 1000;
+    min-width: 210px;
+    padding: 0.3rem;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+    text-align: left;
 }
-#copy-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.row-menu.open { display: block; }
+.row-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    width: 100%;
+    padding: 0.5rem 0.7rem;
+    border: none;
+    border-radius: 5px;
+    background: none;
+    color: #1f2937;
+    font: inherit;
+    font-size: 0.9rem;
+    text-align: left;
+    text-decoration: none;
+    cursor: pointer;
+}
+.row-menu-item:hover { background: var(--light-gray); }
+.row-menu-item.danger { color: #dc2626; }
+.row-menu-item:disabled { color: #9ca3af; background: none; cursor: default; }
+.row-menu-icon { width: 1.2rem; text-align: center; }
+.row-menu hr { border: none; border-top: 1px solid #e5e7eb; margin: 0.3rem 0; }
+.signing-badge {
+    display: inline-block;
+    margin-left: 0.4rem;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    vertical-align: middle;
+    background: #fff3d7;
+    color: #795100;
+}
+.signing-badge.completed { background: #e6f6ef; color: #096c49; }
+.signing-badge.draft { background: #eef1f4; color: #596574; }
 </style>
 {% endblock %}
 
@@ -183,7 +233,7 @@
                     <th onclick="sortTable('created')" style="padding: 1rem; text-align: left; border-bottom: 2px solid #e5e7eb; width: 180px; cursor: pointer; user-select: none;">
                         Created <span id="sort-indicator-created" style="font-size: 0.75rem; color: var(--gray);">⇅</span>
                     </th>
-                    <th style="padding: 1rem; text-align: center; border-bottom: 2px solid #e5e7eb; width: 150px;">Actions</th>
+                    <th style="padding: 1rem; text-align: center; border-bottom: 2px solid #e5e7eb; width: 130px;">Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -228,6 +278,9 @@
                                           onclick="event.stopPropagation(); handlePreview(this.dataset.previewUrl, this.dataset.downloadUrl, this.dataset.filename, this.dataset.extension)">
                                         {{ item.name }}
                                     </span>
+                                    {% if item.signing_request %}
+                                    <span class="signing-badge {{ item.signing_request.status }}">{% if item.signing_request.status == 'completed' %}Signed{% elif item.signing_request.status == 'draft' %}Draft{% else %}In signing{% endif %}</span>
+                                    {% endif %}
                                 {% endif %}
                                 <div style="font-size: 0.875rem; color: var(--gray);">
                                     {% if item.type == 'folder' %}
@@ -248,54 +301,81 @@
                     <td style="padding: 1rem; color: var(--gray);">
                         {{ item.created_at|date:"M d, Y H:i" }}
                     </td>
-                    <td style="padding: 1rem; text-align: center;">
-                        <div style="display: flex; gap: 0.5rem; justify-content: center;">
+                    <td style="padding: 0.5rem 1rem; text-align: center; white-space: nowrap;">
+                        {# Download stays one click away; everything else is in the menu #}
+                        {% if item.type == 'file' %}
+                        <button type="button" class="row-action-btn download-btn"
+                                data-filepath="{{ item.path }}"
+                                data-download-url="{% url 'download_file' item.path %}"
+                                title="Download">⬇️</button>
+                        <button type="button" class="row-action-btn copy-link-btn"
+                                data-filepath="{{ item.path }}"
+                                data-download-url="{% url 'download_file' item.path %}"
+                                title="Copy download link">🔗</button>
+                        {% else %}
+                        <button type="button" class="row-action-btn download-folder-btn"
+                                data-filepath="{{ item.path }}"
+                                title="Download as ZIP">⬇️</button>
+                        <button type="button" class="row-action-btn copy-folder-link-btn"
+                                data-filepath="{{ item.path }}"
+                                data-url="{% url 'file_browser' item.path %}"
+                                title="Copy folder link">🔗</button>
+                        {% endif %}
+                        <button type="button" class="row-action-btn row-menu-toggle" title="More actions" aria-haspopup="menu" aria-expanded="false">{% include 'filemanager/icons/more.svg' %}</button>
+                        <div class="row-menu" role="menu">
                             {% if item.type == 'file' %}
-                                <button class="btn btn-secondary btn-sm download-btn"
+                                <button type="button" class="row-menu-item download-btn"
                                         data-filepath="{{ item.path }}"
-                                        data-download-url="{% url 'download_file' item.path %}"
-                                        title="Download">
-                                    ⬇️
+                                        data-download-url="{% url 'download_file' item.path %}">
+                                    <span class="row-menu-icon">⬇️</span>Download
                                 </button>
-                                <button class="btn btn-sm copy-link-btn"
+                                <button type="button" class="row-menu-item copy-link-btn"
                                         data-filepath="{{ item.path }}"
-                                        data-download-url="{% url 'download_file' item.path %}"
-                                        title="Copy Download Link">
-                                    🔗
+                                        data-download-url="{% url 'download_file' item.path %}">
+                                    <span class="row-menu-icon">🔗</span>Copy link
                                 </button>
-                            {% else %}
-                                <a href="{% url 'file_browser' item.path %}"
-                                   class="btn btn-secondary btn-sm"
-                                   title="Open Folder">
-                                    📂
+                                {% if item.signing_request %}
+                                    {% if item.signing_visible %}
+                                    <a href="{% if item.signing_request.status == 'draft' %}{% url 'signing_fields' item.signing_request.pk %}{% else %}{% url 'signing_detail' item.signing_request.pk %}{% endif %}" class="row-menu-item">
+                                        <span class="row-menu-icon">📝</span>{% if item.signing_request.status == 'draft' %}Continue signing setup{% else %}View signing request{% endif %}
+                                    </a>
+                                    {% endif %}
+                                {% elif item.extension == '.pdf' and perms.filemanager.request_signatures and can_upload and not in_archive %}
+                                <a href="{% url 'signing_create' %}?path={{ item.path|urlencode }}" class="row-menu-item">
+                                    <span class="row-menu-icon">✍️</span>Request signatures
                                 </a>
-                                <button class="btn btn-sm copy-link-btn copy-folder-link-btn"
+                                {% endif %}
+                            {% else %}
+                                <button type="button" class="row-menu-item download-folder-btn"
+                                        data-filepath="{{ item.path }}">
+                                    <span class="row-menu-icon">⬇️</span>Download as ZIP
+                                </button>
+                                <button type="button" class="row-menu-item copy-folder-link-btn"
                                         data-filepath="{{ item.path }}"
-                                        data-url="{% url 'file_browser' item.path %}"
-                                        title="Copy Folder Link">
-                                    🔗
+                                        data-url="{% url 'file_browser' item.path %}">
+                                    <span class="row-menu-icon">🔗</span>Copy link
                                 </button>
                             {% endif %}
 
-                            {% if can_rename and not item.is_archive and not in_archive %}
-                                <button class="btn btn-secondary btn-sm rename-btn"
-                                        data-filepath="{{ item.path }}"
-                                        data-filename="{{ item.name }}"
-                                        data-type="{{ item.type }}"
-                                        title="Rename">
-                                    ✏️
-                                </button>
-                            {% endif %}
-
-                            {% if can_delete and not item.is_archive and not in_archive %}
-                                <button class="btn btn-danger btn-sm delete-btn"
+                            {% if not item.is_archive and not in_archive %}
+                                {% if can_rename or can_delete %}<hr>{% endif %}
+                                {% if can_rename %}
+                                <button type="button" class="row-menu-item rename-btn"
                                         data-filepath="{{ item.path }}"
                                         data-filename="{{ item.name }}"
-                                        title="Delete">
-                                    🗑️
+                                        data-type="{{ item.type }}">
+                                    <span class="row-menu-icon">✏️</span>Rename
                                 </button>
+                                {% endif %}
+                                {% if can_delete %}
+                                <button type="button" class="row-menu-item danger delete-btn"
+                                        data-filepath="{{ item.path }}"
+                                        data-filename="{{ item.name }}"
+                                        {% if item.signing_request and item.signing_request.status != 'draft' %}disabled title="Locked: sent for signing"{% endif %}>
+                                    <span class="row-menu-icon">🗑️</span>Delete
+                                </button>
+                                {% endif %}
                             {% endif %}
-
                         </div>
                     </td>
                 </tr>
@@ -333,7 +413,7 @@
             <input type="text" id="folderName" placeholder="Enter folder name"
                    style="width: 100%; padding: 0.75rem; border: 1px solid #d1d5db; border-radius: 5px;">
         </div>
-        <button class="btn btn-primary" onclick="createFolder()" style="width: 100%;">
+        <button class="btn btn-primary" onclick="createFolder()" style="width: 100%; justify-content: center;">
             Create Folder
         </button>
     </div>
@@ -350,7 +430,7 @@
         </div>
         <input type="hidden" id="renameFilePath">
         <input type="hidden" id="renameFileExt">
-        <button class="btn btn-primary" onclick="submitRename()" style="width: 100%;">
+        <button class="btn btn-primary" onclick="submitRename()" style="width: 100%; justify-content: center;">
             Rename
         </button>
     </div>
@@ -368,15 +448,13 @@
         <div style="font-size: 2.5rem; margin-bottom: 1rem;">🚫</div>
         <h3 style="margin-bottom: 0.5rem;">Preview Not Available</h3>
         <p id="noPreviewMsg" style="color: var(--gray); margin-bottom: 1.5rem;"></p>
-        <button id="noPreviewDownloadBtn" class="btn btn-primary" style="width: 100%;">
+        <button id="noPreviewDownloadBtn" class="btn btn-primary" style="width: 100%; justify-content: center;">
             ⬇️ Download File
         </button>
     </div>
 </div>
 
 <!-- Copy Link Toast -->
-<div id="copy-toast">🔗 Link copied to clipboard!</div>
-
 <!-- Bulk Download Loading Overlay -->
 <div id="downloadOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
     <div style="background:white; padding:2.5rem 3rem; border-radius:12px; text-align:center; box-shadow:0 8px 32px rgba(0,0,0,0.2);">
@@ -389,8 +467,12 @@
 {% endblock %}
 
 {% block extra_js %}
+{# Rendered as HTML, not pasted into a JS string, so any SVG markup is safe #}
+<template id="icon-more">{% include 'filemanager/icons/more.svg' %}</template>
 <script>
 const canDelete = {% if can_delete %}true{% else %}false{% endif %};
+// Same icon as the server-rendered rows, for search results
+const ICON_MORE = document.getElementById('icon-more').innerHTML;
 
 function escapeHtml(str) {
     return String(str)
@@ -449,20 +531,25 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // File action handlers
     document.addEventListener('click', function(e) {
-        if (e.target.classList.contains('download-btn')) {
-            downloadFile(e.target.dataset.downloadUrl);
-        } else if (e.target.classList.contains('copy-folder-link-btn')) {
-            copyFolderLink(e.target, e.target.dataset.url);
-        } else if (e.target.classList.contains('copy-link-btn')) {
-            copyDownloadLink(e.target, e.target.dataset.downloadUrl);
-        } else if (e.target.classList.contains('rename-btn')) {
-            const filePath = e.target.dataset.filepath;
-            const fileName = e.target.dataset.filename;
-            const fileType = e.target.dataset.type;
+        // Menu items hold an icon <span>, so the click target may be inside the button
+        const btn = e.target.closest('button');
+        if (!btn) return;
+        if (btn.classList.contains('download-btn')) {
+            downloadFile(btn.dataset.downloadUrl);
+        } else if (btn.classList.contains('download-folder-btn')) {
+            downloadAsZip([btn.dataset.filepath]);
+        } else if (btn.classList.contains('copy-folder-link-btn')) {
+            copyFolderLink(btn, btn.dataset.url);
+        } else if (btn.classList.contains('copy-link-btn')) {
+            copyDownloadLink(btn, btn.dataset.downloadUrl);
+        } else if (btn.classList.contains('rename-btn')) {
+            const filePath = btn.dataset.filepath;
+            const fileName = btn.dataset.filename;
+            const fileType = btn.dataset.type;
             openRenameModal(filePath, fileName, fileType);
-        } else if (e.target.classList.contains('delete-btn')) {
-            const filePath = e.target.dataset.filepath;
-            const fileName = e.target.dataset.filename;
+        } else if (btn.classList.contains('delete-btn')) {
+            const filePath = btn.dataset.filepath;
+            const fileName = btn.dataset.filename;
             deleteFile(filePath, fileName);
         }
     });
@@ -504,6 +591,45 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 });
+
+// Row "⋯" menus
+function closeRowMenus() {
+    document.querySelectorAll('.row-menu.open').forEach(menu => {
+        menu.classList.remove('open');
+        menu.previousElementSibling.setAttribute('aria-expanded', 'false');
+    });
+}
+
+function openRowMenu(toggle, menu) {
+    menu.classList.add('open');
+    toggle.setAttribute('aria-expanded', 'true');
+    // Right-aligned under the button; above it when there is no room below
+    const rect = toggle.getBoundingClientRect();
+    const fitsBelow = window.innerHeight - rect.bottom > menu.offsetHeight + 8;
+    menu.style.top = (fitsBelow ? rect.bottom + 4 : rect.top - menu.offsetHeight - 4) + 'px';
+    menu.style.left = Math.max(8, rect.right - menu.offsetWidth) + 'px';
+}
+
+document.addEventListener('click', (e) => {
+    const toggle = e.target.closest('.row-menu-toggle');
+    if (toggle) {
+        const menu = toggle.nextElementSibling;
+        const wasOpen = menu.classList.contains('open');
+        closeRowMenus();
+        if (!wasOpen) openRowMenu(toggle, menu);
+        return;
+    }
+    // Clicks on the menu's padding or a disabled item keep it open
+    if (!e.target.closest('.row-menu') || e.target.closest('.row-menu-item')) {
+        closeRowMenus();
+    }
+});
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeRowMenus();
+});
+// A fixed menu would drift away from its row, so close it instead
+window.addEventListener('scroll', closeRowMenus, true);
+window.addEventListener('resize', closeRowMenus);
 
 function openRenameModal(filePath, fileName, fileType) {
     const isFolder = fileType === 'folder';
@@ -573,8 +699,6 @@ function updateRowAfterRename(oldFilePath, result, newName) {
         nameEl.textContent = newName;
         if (nameEl.tagName === 'A') {
             nameEl.href = result.browser_url;
-            const openBtn = row.querySelector('a[title="Open Folder"]');
-            if (openBtn) openBtn.href = result.browser_url;
         }
     }
     row.dataset.name = newName.toLowerCase();
@@ -659,14 +783,6 @@ async function deleteFile(filePath, fileName) {
 
 function downloadFile(downloadUrl) {
     window.open(downloadUrl, '_blank');
-}
-
-function showToast(message, type = 'default') {
-    const toast = document.getElementById('copy-toast');
-    toast.textContent = message;
-    toast.style.background = type === 'error' ? '#dc2626' : type === 'success' ? '#16a34a' : '#1e293b';
-    toast.classList.add('show');
-    setTimeout(() => toast.classList.remove('show'), 3500);
 }
 
 function copyDownloadLink(btn, downloadUrl) {
@@ -992,26 +1108,33 @@ function displaySearchResults(results, query) {
                     <td style="padding: 1rem; color: var(--gray);">
                         ${item.created ? new Date(item.created * 1000).toLocaleString() : '—'}
                     </td>
-                    <td style="padding: 1rem; text-align: center;">
-                        <div style="display: flex; gap: 0.5rem; justify-content: center;">
-                            <button class="btn btn-secondary btn-sm download-btn"
+                    <td style="padding: 0.5rem 1rem; text-align: center; white-space: nowrap;">
+                        <button type="button" class="row-action-btn download-btn"
+                                data-filepath="${escapeHtml(item.path)}"
+                                data-download-url="${escapeHtml(item.download_url)}"
+                                title="Download">⬇️</button>
+                        <button type="button" class="row-action-btn copy-link-btn"
+                                data-filepath="${escapeHtml(item.path)}"
+                                data-download-url="${escapeHtml(item.download_url)}"
+                                title="Copy download link">🔗</button>
+                        <button type="button" class="row-action-btn row-menu-toggle" title="More actions" aria-haspopup="menu" aria-expanded="false">${ICON_MORE}</button>
+                        <div class="row-menu" role="menu">
+                            <button type="button" class="row-menu-item download-btn"
                                     data-filepath="${escapeHtml(item.path)}"
-                                    data-download-url="${escapeHtml(item.download_url)}"
-                                    title="Download">
-                                ⬇️
+                                    data-download-url="${escapeHtml(item.download_url)}">
+                                <span class="row-menu-icon">⬇️</span>Download
                             </button>
-                            <button class="btn btn-sm copy-link-btn"
+                            <button type="button" class="row-menu-item copy-link-btn"
                                     data-filepath="${escapeHtml(item.path)}"
-                                    data-download-url="${escapeHtml(item.download_url)}"
-                                    title="Copy Download Link">
-                                🔗
+                                    data-download-url="${escapeHtml(item.download_url)}">
+                                <span class="row-menu-icon">🔗</span>Copy link
                             </button>
                             ${canDelete ? `
-                            <button class="btn btn-danger btn-sm delete-btn"
+                            <hr>
+                            <button type="button" class="row-menu-item danger delete-btn"
                                     data-filepath="${escapeHtml(item.path)}"
-                                    data-filename="${escapeHtml(item.name)}"
-                                    title="Delete">
-                                🗑️
+                                    data-filename="${escapeHtml(item.name)}">
+                                <span class="row-menu-icon">🗑️</span>Delete
                             </button>
                             ` : ''}
                         </div>
@@ -1139,7 +1262,11 @@ function clearSelection() {
 function bulkDownload() {
     const paths = Array.from(document.querySelectorAll('.file-checkbox:checked')).map(cb => cb.dataset.filepath);
     if (paths.length === 0) return;
+    downloadAsZip(paths);
+}
 
+// Zips the given files/folders on the server (a single folder too)
+function downloadAsZip(paths) {
     // Show loading overlay
     const overlay = document.getElementById('downloadOverlay');
     overlay.style.display = 'flex';
@@ -1197,7 +1324,7 @@ document.addEventListener('DOMContentLoaded', function() {
     document.querySelector('tbody').addEventListener('click', function(e) {
         const row = e.target.closest('tr[data-type="file"], tr[data-type="folder"]');
         if (!row) return;
-        if (e.target.closest('a, button, input')) return;
+        if (e.target.closest('a, button, input, .row-menu')) return;
         const cb = row.querySelector('.file-checkbox');
         if (cb) {
             cb.checked = !cb.checked;

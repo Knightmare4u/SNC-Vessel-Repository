@@ -1,0 +1,840 @@
+/* Signing pages: create, sign, detail and the inbox */
+
+/* ===== Shared ===== */
+/* Keep the hidden attribute working on elements whose class sets display */
+[hidden] {
+    display: none !important;
+}
+
+.sg-wrap {
+    max-width: 1000px;
+    margin: 0 auto;
+}
+
+/* Long file names often have no spaces; let them wrap instead of overflowing */
+.sg-wrap,
+.sg-layout,
+.sg-place {
+    overflow-wrap: anywhere;
+}
+
+.sg-wrap h1 {
+    color: var(--primary-blue);
+    margin-bottom: 0.67em;
+}
+
+.sg-wrap h2 {
+    font-size: 1.15rem;
+    margin-bottom: 0.83em;
+}
+
+.sg-muted {
+    color: var(--gray);
+}
+
+.sg-nav {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.sg-error {
+    color: var(--error-red);
+    font-size: 0.875rem;
+    margin-top: 0.25rem;
+}
+
+/* Spacing helpers, instead of inline styles in the templates */
+.sg-mt {
+    margin-top: 1rem;
+}
+
+.sg-mt-lg {
+    margin-top: 1.5rem;
+}
+
+.sg-mb {
+    margin-bottom: 1rem;
+}
+
+.sg-right {
+    text-align: right;
+}
+
+.sg-small {
+    font-size: 0.8rem;
+}
+
+/* Full-width button with centred text */
+.sg-btn-block {
+    width: 100%;
+    justify-content: center;
+}
+
+/* Section heading (PROGRESS, RECIPIENTS), with optional text on the right */
+.sg-section-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1rem;
+    margin: 1.5rem 0 0.6rem;
+}
+
+.sg-hr {
+    border: 0;
+    border-top: 1px solid #dfe4ea;
+    margin: 1rem 0;
+}
+
+.sg-hr+.sg-section-head {
+    margin-top: 0;
+}
+
+.sg-label {
+    font-size: 0.83em;
+    font-weight: 800;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+}
+
+/* Neutral button for Cancel / paging; base.html's bare .btn has no colours */
+.btn-outline {
+    background: var(--white);
+    color: #17212b;
+    border: 1px solid #cbd3dd;
+}
+
+.btn-outline:hover {
+    background: var(--light-gray);
+}
+
+.alert-info {
+    background: var(--light-blue);
+    color: var(--primary-blue);
+    border: 1px solid #bfdbfe;
+}
+
+/* Same look as the file browser's .signing-badge */
+.sg-badge {
+    display: inline-block;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    vertical-align: middle;
+}
+
+.sg-badge-signed {
+    background: #e6f6ef;
+    color: #096c49;
+}
+
+.sg-badge-pending {
+    background: #fff3d7;
+    color: #795100;
+}
+
+.sg-badge-waiting {
+    background: #eef1f4;
+    color: #596574;
+}
+
+/* Request status: same colours as the signer ones (and the file browser badges) */
+.sg-badge-draft {
+    background: #eef1f4;
+    color: #596574;
+}
+
+.sg-badge-in_progress {
+    background: #fff3d7;
+    color: #795100;
+}
+
+.sg-badge-completed {
+    background: #e6f6ef;
+    color: #096c49;
+}
+
+.sg-progress {
+    height: 9px;
+    background: #edf0f3;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.sg-progress div {
+    height: 100%;
+    background: var(--secondary-blue);
+}
+
+.sg-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.sg-table th {
+    text-align: left;
+    padding: 0.75rem;
+    border-bottom: 1px solid #dfe4ea;
+    color: var(--gray);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+}
+
+.sg-table td {
+    padding: 0.9rem 0.75rem;
+    border-bottom: 1px solid #dfe4ea;
+    vertical-align: middle;
+}
+
+.sg-table tbody tr {
+    transition: background-color 0.15s;
+}
+
+.sg-table tbody tr:hover {
+    background: #f5f8fc;
+}
+
+/* Progress page: the signer table sits right under the progress bar */
+.sg-progress+.sg-table {
+    margin-top: 1.5rem;
+}
+
+/* Tabs: the inbox (links between pages) and the signature dialog (buttons that
+   switch panels) share one look. The current tab is aria-current="page" on a link
+   and aria-selected="true" on a button. */
+.sg-tabs {
+    display: flex;
+    gap: 0.25rem;
+    flex-wrap: wrap;
+    border-bottom: 1px solid #dfe4ea;
+    margin-bottom: 1rem;
+}
+
+.sg-tab {
+    padding: 0.6rem 1rem;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    background: none;
+    color: var(--gray);
+    font: inherit;
+    font-size: 0.95rem;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.sg-tab[aria-current="page"],
+.sg-tab[aria-selected="true"] {
+    color: var(--secondary-blue);
+    border-bottom-color: var(--secondary-blue);
+    font-weight: 600;
+}
+
+/* Reserve the bold width with a hidden bold copy, so tabs don't shift when one turns bold */
+.sg-tab-label {
+    display: inline-flex;
+    flex-direction: column;
+}
+
+.sg-tab-label::after {
+    content: attr(data-text);
+    font-weight: 600;
+    height: 0;
+    visibility: hidden;
+    overflow: hidden;
+}
+
+/* ===== Create: signer rows ===== */
+.sg-signer {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    border: 1px solid #dfe4ea;
+    border-radius: 9px;
+    padding: 0.75rem;
+    margin-bottom: 0.6rem;
+}
+
+.sg-handle {
+    cursor: grab;
+    color: var(--gray);
+    font-size: 1.1rem;
+    padding: 0 0.25rem;
+    user-select: none;
+    touch-action: none;
+}
+
+.sg-dragging {
+    opacity: 0.6;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.sg-dragging .sg-handle {
+    cursor: grabbing;
+}
+
+.sg-num {
+    background: #eef2f6;
+    border-radius: 6px;
+    padding: 0.35rem 0.6rem;
+    font-weight: bold;
+    min-width: 2rem;
+    text-align: center;
+}
+
+/* min-width: lets long names shrink instead of widening the row */
+.sg-grow {
+    flex: 1;
+    min-width: 0;
+}
+
+.sg-grow select {
+    width: 100%;
+    padding: 0.5rem;
+    border: 1px solid #cbd3dd;
+    border-radius: 6px;
+    font-size: 1rem;
+}
+
+/* Same height as the select2 box next to it; turns red only on hover */
+.sg-remove {
+    flex: none;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--gray);
+    font-size: 1rem;
+    cursor: pointer;
+    transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.sg-remove:hover {
+    background: #fee2e2;
+    border-color: #fecaca;
+    color: #dc2626;
+}
+
+/* ===== Create: select2 dropdowns =====
+   Signers are single selects, the notify list a multiple one; select2 sizes the two
+   differently by default (28px vs 32px), so give both the same box.
+   Loaded after select2.css, so these win at equal specificity. */
+.select2-container--default .select2-selection--single,
+.select2-container--default .select2-selection--multiple {
+    min-height: 40px;
+    border: 1px solid #cbd3dd;
+    border-radius: 6px;
+    font-size: 1rem;
+}
+
+.select2-container .select2-selection--single {
+    height: 40px;
+}
+
+.select2-container--default .select2-selection--single .select2-selection__rendered {
+    line-height: 38px;
+    padding-left: 0.75rem;
+    color: #17212b;
+}
+
+.select2-container--default .select2-selection--single .select2-selection__placeholder {
+    color: var(--gray);
+}
+
+.select2-container--default .select2-selection--single .select2-selection__arrow {
+    height: 38px;
+    right: 6px;
+}
+
+.select2-container--default .select2-selection--multiple .select2-selection__rendered {
+    padding: 0 0.5rem 0 0.75rem;
+}
+
+.select2-container--default .select2-selection--multiple .select2-selection__choice {
+    display: flex;
+    align-items: center;
+    gap: 0.2rem;
+    height: 24px;
+    margin-top: 7px;
+    padding: 0 0.4rem 0 0.25rem;
+    line-height: 1;
+    border: 1px solid #bfdbfe;
+    border-radius: 4px;
+    background: #eff6ff;
+    color: var(--primary-blue);
+}
+
+/* An SVG cross instead of select2's "×" text, which sits low in most fonts.
+   Drawn in currentColor, so select2's grey and hover colours still apply. */
+.select2-container--default .select2-selection--multiple .select2-selection__choice__remove {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    font-size: 0;
+    background: currentColor;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1 1l8 8M9 1l-8 8' stroke='black' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") center / 8px no-repeat;
+}
+
+.select2-container .select2-search--inline .select2-search__field {
+    margin-top: 9px;
+}
+
+.select2-container--default.select2-container--focus .select2-selection--multiple,
+.select2-container--default.select2-container--open .select2-selection--single,
+.select2-container--default.select2-container--open .select2-selection--multiple {
+    border-color: var(--secondary-blue);
+}
+
+/* ===== Create: where signatures go ===== */
+.sg-choices label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0;
+    cursor: pointer;
+}
+
+/* ===== Fields: place signature boxes on the PDF ===== */
+.sg-place {
+    display: grid;
+    grid-template-columns: 330px 1fr;
+    gap: 1.5rem;
+    align-items: start;
+}
+
+/* Same width as the sign page's panel (.sg-layout) */
+.sg-place-side {
+    position: sticky;
+    top: 1rem;
+    margin-bottom: 0;
+}
+
+/* Too narrow for both buttons on one line; full width like the sign page's button */
+.sg-place-side .sg-nav {
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.sg-place-side h2 {
+    margin-bottom: 0.83em;
+}
+
+/* One card per recipient; the dot matches their boxes on the PDF */
+.sg-place-signer {
+    margin-bottom: 0.5rem;
+    padding: 0.65rem;
+    border: 1px solid #dfe4ea;
+    border-radius: 10px;
+    cursor: pointer;
+}
+
+.sg-place-signer.sg-place-on {
+    border-color: var(--box-color);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--box-color) 20%, transparent);
+}
+
+.sg-place-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.sg-place-order {
+    flex: none;
+    width: 24px;
+    height: 24px;
+    display: grid;
+    place-items: center;
+    border-radius: 7px;
+    background: #eef2f6;
+    font-size: 0.8rem;
+    font-weight: 800;
+}
+
+.sg-place-dot {
+    flex: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--box-color);
+}
+
+.sg-place-name {
+    font-size: 0.9rem;
+    font-weight: 700;
+}
+
+.sg-place-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+}
+
+/* Usually too wide to sit side by side; a wrapped button fills its own row */
+.sg-place-actions .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+    padding: 0.3rem 0.65rem;
+    font-size: 0.8rem;
+}
+
+.sg-place-pages {
+    min-height: 60vh;
+    padding: 1rem;
+    border-radius: 10px;
+    background: #e9edf2;
+}
+
+.sg-page {
+    position: relative;
+    max-width: 900px;
+    margin: 0 auto 1.25rem;
+    background: var(--white);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.sg-page canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+/* Each signer's colour comes in as --box-color */
+.sg-box {
+    position: absolute;
+    box-sizing: border-box;
+    overflow: hidden;
+    border: 2px solid var(--box-color);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--box-color) 12%, transparent);
+    cursor: move;
+    user-select: none;
+    touch-action: none;
+}
+
+/* "✍ Signature" in bold, the person's name below */
+.sg-box-label {
+    display: block;
+    padding: 4px 20px 0 6px;
+    color: #17212b;
+}
+
+.sg-box-label b,
+.sg-box-label small {
+    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.sg-box-label b {
+    font-size: 12px;
+}
+
+.sg-box-label small {
+    font-size: 11px;
+}
+
+.sg-box-remove {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    background: var(--box-color);
+    color: var(--white);
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.sg-box-resize {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 12px;
+    height: 12px;
+    background: var(--box-color);
+    cursor: nwse-resize;
+}
+
+.sg-box-active {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--box-color) 30%, transparent);
+}
+
+.sg-box-flash {
+    animation: sg-box-flash 0.8s;
+}
+
+@keyframes sg-box-flash {
+    50% {
+        box-shadow: 0 0 0 6px color-mix(in srgb, var(--box-color) 40%, transparent);
+    }
+}
+
+/* ===== Inbox ===== */
+.sg-count {
+    display: inline-block;
+    min-width: 1.4rem;
+    padding: 0 0.4rem;
+    margin-left: 0.25rem;
+    border-radius: 10px;
+    background: #eef1f4;
+    font-size: 0.75rem;
+    font-weight: 400;
+    text-align: center;
+}
+
+.sg-tab[aria-current="page"] .sg-count {
+    background: var(--light-blue);
+}
+
+.sg-table .sg-progress {
+    width: 120px;
+    margin-bottom: 0.25rem;
+}
+
+/* File names: one line cut with "…", the full name in the tooltip (as in Drive or
+   OneDrive). max-width: 0 lets the cell shrink below the name's width so the "…"
+   can show; the other cells keep to one line instead of being squeezed. */
+.sg-doc {
+    width: 100%;
+    max-width: 0;
+}
+
+.sg-doc~td {
+    white-space: nowrap;
+}
+
+.sg-filename {
+    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-weight: 500;
+}
+
+.sg-empty {
+    padding: 3rem 1rem;
+    text-align: center;
+    color: var(--gray);
+}
+
+.sg-pages {
+    display: flex;
+    justify-content: center;
+    gap: 1rem;
+    align-items: center;
+    margin-top: 1rem;
+}
+
+/* ===== Sign: PDF + side panel ===== */
+/* Fixed row height so the PDF and the panel always line up */
+.sg-layout {
+    display: grid;
+    grid-template-columns: 1fr 330px;
+    gap: 1.5rem;
+    height: 80vh;
+}
+
+.sg-layout aside {
+    margin-bottom: 0;
+    overflow-y: auto;
+}
+
+.sg-layout aside h2,
+.sg-modal-box h2 {
+    margin-bottom: 0.83em;
+}
+
+/* The PDF is drawn with pdf.js; manual requests also show this signer's boxes on it */
+.sg-sign-pages {
+    height: 100%;
+    overflow-y: auto;
+    padding: 1rem;
+    border-radius: 10px;
+    background: #e9edf2;
+}
+
+.sg-target {
+    position: absolute;
+    display: grid;
+    place-items: center;
+    padding: 0 4px;
+    overflow: hidden;
+    border: 2px dashed var(--secondary-blue);
+    border-radius: 6px;
+    background: #eff5ff;
+    color: var(--secondary-blue);
+    font: inherit;
+    font-size: 0.8rem;
+    font-weight: 700;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.sg-target:hover {
+    background: #dbeafe;
+}
+
+.sg-target-date {
+    border-color: #9ca3af;
+    background: #f3f4f6;
+    color: var(--gray);
+    font-weight: 400;
+    cursor: default;
+}
+
+.sg-target-date:hover {
+    background: #f3f4f6;
+}
+
+.sg-status {
+    padding: 0.6rem 0.75rem;
+    border-radius: 9px;
+    background: #fff7e6;
+    color: #7a4e00;
+    margin: 1rem 0;
+}
+
+/* ===== Sign: signature dialog ===== */
+.sg-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+}
+
+.sg-modal.open {
+    display: flex;
+}
+
+.sg-modal-box {
+    background: var(--white);
+    width: 560px;
+    max-width: 100%;
+    padding: 1.5rem;
+    border-radius: 12px;
+}
+
+.sg-pad {
+    display: block;
+    width: 100%;
+    height: 190px;
+    border: 1px solid #bbb;
+    border-radius: 6px;
+    touch-action: none;
+    cursor: crosshair;
+}
+
+.sg-saved {
+    height: 190px;
+    border: 1px solid #dfe4ea;
+    border-radius: 6px;
+    display: grid;
+    place-items: center;
+    background: #fafbfc;
+}
+
+.sg-saved img {
+    max-width: 90%;
+    max-height: 150px;
+}
+
+/* Checkerboard behind the upload preview shows that the white background was removed */
+.sg-upload {
+    height: 190px;
+    border: 2px dashed #cbd3dd;
+    border-radius: 6px;
+    display: grid;
+    place-items: center;
+    text-align: center;
+    color: var(--gray);
+    cursor: pointer;
+    position: relative;
+    background-image:
+        linear-gradient(45deg, #f1f3f5 25%, transparent 25%), linear-gradient(-45deg, #f1f3f5 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #f1f3f5 75%), linear-gradient(-45deg, transparent 75%, #f1f3f5 75%);
+    background-size: 16px 16px;
+    background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+.sg-upload input {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.sg-upload img {
+    max-width: 90%;
+    max-height: 160px;
+}
+
+.sg-hint {
+    font-size: 0.8rem;
+    color: var(--gray);
+    margin-top: 0.4rem;
+}
+
+.sg-link {
+    border: none;
+    background: none;
+    color: var(--secondary-blue);
+    cursor: pointer;
+    padding: 0;
+    font-size: inherit;
+}
+
+.sg-save {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    font-size: 0.9rem;
+}
+
+.sg-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+}
+
+/* ===== Small screens ===== */
+@media (max-width: 900px) {
+    .sg-layout {
+        grid-template-columns: 1fr;
+        height: auto;
+    }
+
+    .sg-sign-pages {
+        height: 60vh;
+    }
+
+    .sg-place {
+        grid-template-columns: 1fr;
+    }
+
+    /* PDF first, as on the sign page */
+    .sg-place-side {
+        position: static;
+        order: 1;
+    }
+}
+
+@media (max-width: 768px) {
+    .sg-hide-mobile {
+        display: none;
+    }
+}

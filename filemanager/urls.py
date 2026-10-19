@@ -34,4 +34,11 @@ urlpatterns = [
     path('delete/', views.delete_file, name='delete_file'),
     path('search/', views.search_files, name='search_files'),
     path('create-folder/', views.create_folder, name='create_folder'),
+    path('signing/', views.signing_list, name='signing_list'),
+    path('signing/new/', views.signing_create, name='signing_create'),
+    path('signing/<int:pk>/', views.signing_detail, name='signing_detail'),
+    path('signing/<int:pk>/fields/', views.signing_fields, name='signing_fields'),
+    path('signing/<int:pk>/delete/', views.signing_delete, name='signing_delete'),
+    path('signing/<int:pk>/sign/', views.signing_sign, name='signing_sign'),
+    path('signing/<int:pk>/pdf/', views.signing_pdf, name='signing_pdf'),
 ]
