@@ -118,6 +118,121 @@
 }
 .signing-badge.completed { background: #e6f6ef; color: #096c49; }
 .signing-badge.draft { background: #eef1f4; color: #596574; }
+/* Breadcrumb: gap, not the spaces between the buttons, so wrapped rows don't touch.
+   The column gap is about a space's width, as before. */
+.breadcrumb {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.3rem;
+}
+/* Search bar: filters, search box and button as one bordered control */
+.fb-search {
+    display: flex;
+    border: 1px solid #d1d5db;
+    border-radius: 5px;
+    overflow: hidden;
+}
+/* appearance: none: Safari (iPhone, iPad, Mac) otherwise draws its own rounded,
+   shaded box that background and border-radius don't change. The arrow goes too,
+   so it is drawn here as the background image. */
+.fb-search select {
+    appearance: none;
+    -webkit-appearance: none;
+    border-radius: 0;
+    color: inherit;  /* Safari on iPhone otherwise shows the text in system blue */
+    padding: 0.6rem 2rem 0.6rem 0.75rem;
+    border: none;
+    border-right: 1px solid #d1d5db;
+    background: #f9fafb url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%236b7280' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 0.75rem center / 10px;
+    font-size: 0.875rem;
+    outline: none;
+    cursor: pointer;
+}
+/* Search box and its button, kept together as one piece */
+.fb-search-box {
+    display: flex;
+    flex: 1;
+}
+.fb-search-field {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex: 1;
+}
+.fb-search-field input {
+    padding: 0.75rem;
+    padding-right: 2rem;
+    border: none;
+    width: 220px;
+    outline: none;
+    flex: 1;
+}
+.fb-search-clear {
+    position: absolute;
+    right: 0.4rem;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: #9ca3af;
+    font-size: 1rem;
+    line-height: 1;
+    padding: 0;
+}
+/* An SVG, not the 🔍 emoji: emoji fonts differ per device and the top of the
+   glyph got flattened at some zoom levels */
+.fb-search-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0;
+    border: none;
+    border-left: 1px solid #d1d5db;
+    padding: 0.75rem 1rem;
+    background: #f9fafb;
+    color: #4b5563;
+    cursor: pointer;
+}
+.fb-search-btn svg { display: block; width: 18px; height: 18px; }
+/* File table cells. Rows spanning the whole table (empty folder, search
+   messages) set their own padding. */
+.fb-file-table th,
+.fb-file-table td { padding: 1rem; }
+.fb-file-table .fb-actions-col { width: 130px; }
+.fb-file-table td.fb-actions-col { padding: 0.5rem 1rem; }
+@media (max-width: 768px) {
+    /* Filters on the first line, half each; search box and button on the second */
+    .fb-search {
+        flex-wrap: wrap;
+        width: 100%;
+    }
+    .fb-search select {
+        flex: 0 0 50%;
+        min-width: 0;
+    }
+    .fb-search select:last-of-type { border-right: none; }
+    .fb-search-box {
+        flex: 0 0 100%;
+        border-top: 1px solid #d1d5db;
+    }
+    /* Let the search box shrink on small phones instead of pushing the button out */
+    .fb-search-field,
+    .fb-search-field input {
+        min-width: 0;
+    }
+    .fb-search-field input { width: auto; }
+    /* Table: name and actions only; Download and Copy link are also in the "⋯" menu */
+    .fb-hide-mobile,
+    .fb-file-table .row-action-btn:not(.row-menu-toggle) {
+        display: none;
+    }
+    .fb-file-table .fb-actions-col { width: auto; }
+    .fb-file-table th,
+    .fb-file-table td { padding: 0.75rem 0.4rem; }
+    .fb-file-table td.fb-actions-col { padding: 0.5rem 0.4rem; }
+    /* Long names without spaces wrap instead of widening the table */
+    .fb-name-col { overflow-wrap: anywhere; }
+}
 </style>
 {% endblock %}
 
@@ -140,9 +255,8 @@
         </div>
 
         <div style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
-            <div style="display: flex; border: 1px solid #d1d5db; border-radius: 5px; overflow: hidden;">
-                <select id="fileTypeFilter" onchange="triggerSearchIfActive()"
-                        style="padding: 0.6rem 0.75rem; border: none; border-right: 1px solid #d1d5db; background: #f9fafb; font-size: 0.875rem; outline: none; cursor: pointer;">
+            <div class="fb-search">
+                <select id="fileTypeFilter" onchange="triggerSearchIfActive()">
                     <option value="">All Types</option>
                     <option value="document">Documents</option>
                     <option value="pdf">PDF</option>
@@ -153,21 +267,19 @@
                     <option value="audio">Audio</option>
                     <option value="zip">ZIP</option>
                 </select>
-                <select id="searchScope" onchange="triggerSearchIfActive()"
-                        style="padding: 0.6rem 0.75rem; border: none; border-right: 1px solid #d1d5db; background: #f9fafb; font-size: 0.875rem; outline: none; cursor: pointer;">
+                <select id="searchScope" onchange="triggerSearchIfActive()">
                     <option value="all">All Folders</option>
                     <option value="current">Current Folder</option>
                 </select>
-                <div style="position: relative; display: flex; align-items: center; flex: 1;">
-                    <input type="text" id="searchInput" placeholder="Search files..."
-                           style="padding: 0.75rem; padding-right: 2rem; border: none; width: 220px; outline: none; flex: 1;">
-                    <button id="searchClearBtn" onclick="clearSearch()" title="Clear search"
-                            style="display: none; position: absolute; right: 0.4rem; background: none; border: none; cursor: pointer; color: #9ca3af; font-size: 1rem; line-height: 1; padding: 0;">✕</button>
+                <div class="fb-search-box">
+                    <div class="fb-search-field">
+                        <input type="text" id="searchInput" placeholder="Search files...">
+                        <button id="searchClearBtn" class="fb-search-clear" onclick="clearSearch()" title="Clear search"
+                                style="display: none;">✕</button>
+                    </div>
+                    <button class="fb-search-btn" onclick="performSearch(document.getElementById('searchInput').value)"
+                            title="Search" aria-label="Search">{% include 'filemanager/icons/search.svg' %}</button>
                 </div>
-                <button onclick="performSearch(document.getElementById('searchInput').value)"
-                        style="border-radius: 0; border: none; border-left: 1px solid #d1d5db; padding: 0.75rem 1rem; background: #f9fafb; cursor: pointer; font-size: 1rem;">
-                    🔍
-                </button>
             </div>
 
             {% if can_create_folder and not in_archive %}
@@ -207,7 +319,7 @@
     {% endif %}
 
     <!-- Bulk Action Bar -->
-    <div id="bulkActionBar" style="display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 999; padding: 0.75rem 1.5rem; background: var(--light-blue); border-bottom: 2px solid var(--secondary-blue); align-items: center; gap: 1rem; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+    <div id="bulkActionBar" style="display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 999; padding: 0.75rem 1.5rem; background: var(--light-blue); border-bottom: 2px solid var(--secondary-blue); align-items: center; flex-wrap: wrap; gap: 1rem; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
         <span id="selectedCount" style="font-weight: 600; color: var(--primary-blue);"></span>
         <button class="btn btn-primary btn-sm" onclick="bulkDownload()">⬇️ Download Selected</button>
         <button class="btn btn-secondary btn-sm" onclick="clearSelection()">Clear Selection</button>
@@ -215,25 +327,25 @@
 
     <!-- Files List -->
     <div style="overflow-x: auto;">
-        <table style="width: 100%; border-collapse: collapse; background: var(--white);">
+        <table class="fb-file-table" style="width: 100%; border-collapse: collapse; background: var(--white);">
             <thead style="position: sticky; top: 0; z-index: 10;">
                 <tr style="background: var(--light-gray);">
-                    <th style="padding: 1rem; text-align: center; border-bottom: 2px solid #e5e7eb; width: 40px;">
+                    <th style="text-align: center; border-bottom: 2px solid #e5e7eb; width: 40px;">
                         <input type="checkbox" id="selectAll" class="custom-checkbox" title="Select All Files">
                     </th>
-                    <th onclick="sortTable('name')" style="padding: 1rem; text-align: left; border-bottom: 2px solid #e5e7eb; cursor: pointer; user-select: none;">
+                    <th onclick="sortTable('name')" style="text-align: left; border-bottom: 2px solid #e5e7eb; cursor: pointer; user-select: none;">
                         Name <span id="sort-indicator-name" style="font-size: 0.75rem; color: var(--gray);">⇅</span>
                     </th>
-                    <th onclick="sortTable('size')" style="padding: 1rem; text-align: left; border-bottom: 2px solid #e5e7eb; width: 120px; cursor: pointer; user-select: none;">
+                    <th class="fb-hide-mobile" onclick="sortTable('size')" style="text-align: left; border-bottom: 2px solid #e5e7eb; width: 120px; cursor: pointer; user-select: none;">
                         Size <span id="sort-indicator-size" style="font-size: 0.75rem; color: var(--gray);">⇅</span>
                     </th>
-                    <th onclick="sortTable('modified')" style="padding: 1rem; text-align: left; border-bottom: 2px solid #e5e7eb; width: 180px; cursor: pointer; user-select: none;">
+                    <th class="fb-hide-mobile" onclick="sortTable('modified')" style="text-align: left; border-bottom: 2px solid #e5e7eb; width: 180px; cursor: pointer; user-select: none;">
                         Modified <span id="sort-indicator-modified" style="font-size: 0.75rem; color: var(--gray);">⇅</span>
                     </th>
-                    <th onclick="sortTable('created')" style="padding: 1rem; text-align: left; border-bottom: 2px solid #e5e7eb; width: 180px; cursor: pointer; user-select: none;">
+                    <th class="fb-hide-mobile" onclick="sortTable('created')" style="text-align: left; border-bottom: 2px solid #e5e7eb; width: 180px; cursor: pointer; user-select: none;">
                         Created <span id="sort-indicator-created" style="font-size: 0.75rem; color: var(--gray);">⇅</span>
                     </th>
-                    <th style="padding: 1rem; text-align: center; border-bottom: 2px solid #e5e7eb; width: 130px;">Actions</th>
+                    <th class="fb-actions-col" style="text-align: center; border-bottom: 2px solid #e5e7eb;">Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -246,12 +358,12 @@
                     data-modified="{{ item.modified|date:'U' }}"
                     data-created="{{ item.created_at|date:'U' }}"
                     data-type="{{ item.type }}">
-                    <td style="padding: 1rem; text-align: center;">
+                    <td style="text-align: center;">
                         <input type="checkbox" class="file-checkbox custom-checkbox"
                                data-filepath="{{ item.path }}"
                                data-filename="{{ item.name }}">
                     </td>
-                    <td style="padding: 1rem;">
+                    <td class="fb-name-col">
                         <div style="display: flex; align-items: center; gap: 0.75rem;">
                             <div style="font-size: 1.5rem;">
                                 {% if item.type == 'folder' %}
@@ -292,16 +404,16 @@
                             </div>
                         </div>
                     </td>
-                    <td style="padding: 1rem; color: var(--gray);">
+                    <td class="fb-hide-mobile" style="color: var(--gray);">
                         {{ item.size }}
                     </td>
-                    <td style="padding: 1rem; color: var(--gray);">
+                    <td class="fb-hide-mobile" style="color: var(--gray);">
                         {{ item.modified|date:"M d, Y H:i" }}
                     </td>
-                    <td style="padding: 1rem; color: var(--gray);">
+                    <td class="fb-hide-mobile" style="color: var(--gray);">
                         {{ item.created_at|date:"M d, Y H:i" }}
                     </td>
-                    <td style="padding: 0.5rem 1rem; text-align: center; white-space: nowrap;">
+                    <td class="fb-actions-col" style="text-align: center; white-space: nowrap;">
                         {# Download stays one click away; everything else is in the menu #}
                         {% if item.type == 'file' %}
                         <button type="button" class="row-action-btn download-btn"
@@ -445,11 +557,11 @@
     <div style="background-color: var(--white); margin: 12% auto; padding: 2rem; border-radius: 10px; width: 90%; max-width: 420px; position: relative; text-align: center;">
         <span onclick="document.getElementById('noPreviewModal').style.display='none'"
               style="position: absolute; right: 1rem; top: 1rem; font-size: 1.5rem; cursor: pointer; color: var(--gray);">&times;</span>
-        <div style="font-size: 2.5rem; margin-bottom: 1rem;">🚫</div>
-        <h3 style="margin-bottom: 0.5rem;">Preview Not Available</h3>
-        <p id="noPreviewMsg" style="color: var(--gray); margin-bottom: 1.5rem;"></p>
-        <button id="noPreviewDownloadBtn" class="btn btn-primary" style="width: 100%; justify-content: center;">
-            ⬇️ Download File
+        <div style="font-size: 3rem; margin-bottom: 1rem;">📄</div>
+        <h2 style="margin-bottom: 1rem; color: var(--primary-blue);">Preview Unavailable</h2>
+        <p style="margin-bottom: 2rem; color: var(--gray);">This file cannot be previewed. Please download the file and open it with the appropriate application.</p>
+        <button id="noPreviewDownloadBtn" class="btn btn-primary">
+            Download File
         </button>
     </div>
 </div>
@@ -930,8 +1042,6 @@ function handlePreview(previewUrl, downloadUrl, fileName, ext) {
         window.open(previewUrl, '_blank');
         return;
     }
-    document.getElementById('noPreviewMsg').textContent =
-        extension.toUpperCase() + ' files cannot be previewed in the browser. Please download the file and open it with the appropriate application.';
     const downloadBtn = document.getElementById('noPreviewDownloadBtn');
     downloadBtn.onclick = () => {
         downloadFile(downloadUrl);
@@ -1010,6 +1120,8 @@ async function performSearch(query) {
                     <p>Searching...</p>
                 </td>
             </tr>`;
+        // The checked rows are gone, so hide the bulk bar and reset "select all"
+        updateBulkBar();
     }
     if (searchBtn) searchBtn.disabled = true;
 
@@ -1071,12 +1183,12 @@ function displaySearchResults(results, query) {
                     data-size-bytes="${item.size}"
                     data-modified="${item.modified}"
                     data-created="${item.created || 0}">
-                    <td style="padding: 1rem; text-align: center;">
+                    <td style="text-align: center;">
                         <input type="checkbox" class="file-checkbox custom-checkbox"
                                data-filepath="${escapeHtml(item.path)}"
                                data-filename="${escapeHtml(item.name)}">
                     </td>
-                    <td style="padding: 1rem;">
+                    <td class="fb-name-col">
                         <div style="display: flex; align-items: center; gap: 0.75rem;">
                             <div style="font-size: 1.5rem;">
                                 ${escapeHtml(item.icon)}
@@ -1099,16 +1211,16 @@ function displaySearchResults(results, query) {
                             </div>
                         </div>
                     </td>
-                    <td style="padding: 1rem; color: var(--gray);">
+                    <td class="fb-hide-mobile" style="color: var(--gray);">
                         ${escapeHtml(item.formatted_size)}
                     </td>
-                    <td style="padding: 1rem; color: var(--gray);">
+                    <td class="fb-hide-mobile" style="color: var(--gray);">
                         ${modifiedDate}
                     </td>
-                    <td style="padding: 1rem; color: var(--gray);">
+                    <td class="fb-hide-mobile" style="color: var(--gray);">
                         ${item.created ? new Date(item.created * 1000).toLocaleString() : '—'}
                     </td>
-                    <td style="padding: 0.5rem 1rem; text-align: center; white-space: nowrap;">
+                    <td class="fb-actions-col" style="text-align: center; white-space: nowrap;">
                         <button type="button" class="row-action-btn download-btn"
                                 data-filepath="${escapeHtml(item.path)}"
                                 data-download-url="${escapeHtml(item.download_url)}"

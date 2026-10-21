@@ -123,6 +123,8 @@
     font-size: 0.72rem;
     font-weight: 600;
     vertical-align: middle;
+    /* .sg-wrap's overflow-wrap would otherwise split "Signed" on narrow screens */
+    white-space: nowrap;
 }
 
 .sg-badge-signed {
@@ -180,6 +182,8 @@
     color: var(--gray);
     font-size: 0.75rem;
     text-transform: uppercase;
+    /* Headers stay on one line; the cells wrap instead */
+    white-space: nowrap;
 }
 
 .sg-table td {
@@ -836,5 +840,11 @@
 @media (max-width: 768px) {
     .sg-hide-mobile {
         display: none;
+    }
+
+    .sg-table th,
+    .sg-table td {
+        padding-left: 0.5rem;
+        padding-right: 0.5rem;
     }
 }

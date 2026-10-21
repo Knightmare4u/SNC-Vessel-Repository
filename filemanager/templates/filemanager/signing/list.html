@@ -27,7 +27,7 @@
                     <th>Document</th>
                     <th>Status</th>
                     <th class="sg-hide-mobile">Sent by</th>
-                    <th>Progress</th>
+                    <th class="sg-hide-mobile">Progress</th>
                     <th class="sg-hide-mobile">Sent on</th>
                     <th></th>
                 </tr>
@@ -40,7 +40,7 @@
                     </td>
                     <td><span class="sg-badge sg-badge-{{ signing_request.status }}">{{ signing_request.get_status_display }}</span></td>
                     <td class="sg-hide-mobile">{{ signing_request.created_by|display_name }}</td>
-                    <td>
+                    <td class="sg-hide-mobile">
                         <div class="sg-progress"><div style="width: {% widthratio signing_request.signed_count signing_request.signer_count 100 %}%;"></div></div>
                         <span class="sg-muted sg-small">{{ signing_request.signed_count }} of {{ signing_request.signer_count }} signed</span>
                     </td>
