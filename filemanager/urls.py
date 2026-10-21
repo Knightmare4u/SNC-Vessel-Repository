@@ -4,13 +4,13 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
+    path('', views.LoginView.as_view(), name='login'),
+    path('auth/microsoft/login/', views.microsoft_login, name='microsoft_login'),
+    # The redirect URI on the Entra ID app registration
     path(
-        '',
-        auth_views.LoginView.as_view(
-            template_name='filemanager/login.html',
-            redirect_authenticated_user=True,
-        ),
-        name='login',
+        'auth/microsoft/callback/',
+        views.microsoft_callback,
+        name='microsoft_callback',
     ),
     path(
         'logout/',

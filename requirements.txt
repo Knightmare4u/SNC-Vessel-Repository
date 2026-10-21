@@ -18,3 +18,4 @@ concurrent-log-handler==0.9.29
 zipstream-ng==1.9.2
 pypdf==6.20.1
 reportlab==4.5.1
+msal==1.39.0

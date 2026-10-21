@@ -5,13 +5,16 @@ import os
 import posixpath
 import re
 from pathlib import PurePosixPath
+from urllib.parse import urlsplit
 
 import mammoth
 import openpyxl
 import xlrd
 import zipstream
+from django.conf import settings
 from django.contrib import messages
-from django.contrib.auth import update_session_auth_hash
+from django.contrib.auth import login, update_session_auth_hash
+from django.contrib.auth import views as auth_views
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import PasswordChangeForm
 from django.core.exceptions import (
@@ -33,7 +36,10 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.html import escape
-from django.utils.http import content_disposition_header
+from django.utils.http import (
+    content_disposition_header,
+    url_has_allowed_host_and_scheme,
+)
 from django.utils.text import get_valid_filename
 from django.views.decorators.http import require_POST
 from xlrd.xldate import xldate_as_datetime
@@ -51,6 +57,7 @@ from .models import (
     UserProfile,
 )
 from .services import filesystem
+from .services import microsoft_auth
 from .services import signing as signing_service
 from .utils import (
     display_name,
@@ -112,6 +119,13 @@ SIGNING_LIST_TABS = {
     'notified': 'Notified',
 }
 
+MICROSOFT_UNAVAILABLE = (
+    'Microsoft sign-in is unavailable right now. Please try again later.'
+)
+# Session keys holding a Microsoft sign-in until Microsoft sends the user back
+MICROSOFT_FLOW_KEY = 'microsoft_auth_flow'
+MICROSOFT_NEXT_KEY = 'microsoft_auth_next'
+
 
 def get_file_icon(extension):
     return FILE_ICONS.get(extension, '📄')
@@ -157,6 +171,64 @@ def change_password(request):
         form = PasswordChangeForm(request.user)
 
     return render(request, 'filemanager/change_password.html', {'form': form})
+
+
+class LoginView(auth_views.LoginView):
+    template_name = 'filemanager/login.html'
+    redirect_authenticated_user = True
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['microsoft_login_enabled'] = microsoft_auth.is_enabled()
+        return context
+
+
+def microsoft_login(request):
+    if not microsoft_auth.is_enabled():
+        raise Http404
+    redirect_uri = urlsplit(settings.MICROSOFT_REDIRECT_URI)
+    if request.get_host() != redirect_uri.netloc:
+        # e.g. the IP address: Microsoft sends users back to the redirect URI's
+        # site only, so the flow must be kept in that site's session
+        return redirect(
+            f'{redirect_uri.scheme}://{redirect_uri.netloc}{request.get_full_path()}'
+        )
+
+    next_url = request.GET.get('next', '')
+    if not url_has_allowed_host_and_scheme(next_url, {request.get_host()}):
+        next_url = ''
+    try:
+        flow = microsoft_auth.start_flow()
+    except Exception:
+        logger.exception('Could not start Microsoft sign-in')
+        messages.error(request, MICROSOFT_UNAVAILABLE)
+        return redirect('login')
+    request.session[MICROSOFT_FLOW_KEY] = flow
+    request.session[MICROSOFT_NEXT_KEY] = next_url
+    return redirect(flow['auth_uri'])
+
+
+def microsoft_callback(request):
+    # One use only, so a reloaded or replayed callback is refused
+    flow = request.session.pop(MICROSOFT_FLOW_KEY, None)
+    next_url = request.session.pop(MICROSOFT_NEXT_KEY, '')
+    if flow is None:
+        messages.error(request, 'Your Microsoft sign-in expired. Please try again.')
+        return redirect('login')
+    try:
+        user = microsoft_auth.authenticate(flow, request.GET.dict())
+    except microsoft_auth.MicrosoftLoginError as e:
+        messages.error(request, str(e))
+        return redirect('login')
+    except Exception:
+        logger.exception('Microsoft sign-in failed')
+        messages.error(request, MICROSOFT_UNAVAILABLE)
+        return redirect('login')
+
+    login(request, user, backend='django.contrib.auth.backends.ModelBackend')
+    request.session[microsoft_auth.SESSION_KEY] = True
+    logger.info('User %s signed in with Microsoft', user.username)
+    return redirect(next_url or settings.LOGIN_REDIRECT_URL)
 
 
 @login_required

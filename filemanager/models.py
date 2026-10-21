@@ -29,6 +29,18 @@ class UserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     password_changed = models.BooleanField(default=False)
     vessel_name = models.CharField(max_length=100, blank=True)
+    # Entra ID object ID, set on the first sign-in with Microsoft
+    microsoft_oid = models.CharField(
+        'Microsoft account ID',
+        max_length=36,
+        unique=True,
+        null=True,
+        blank=True,
+        help_text=(
+            'Set on the first sign-in with Microsoft. Clear it to let a '
+            'different Microsoft account link to this user.'
+        ),
+    )
 
     def __str__(self):
         return f"{self.user.username} - {self.vessel_name}"

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from decouple import config
+from decouple import Csv, config
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -119,6 +119,18 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 LOGIN_URL = '/'
 LOGIN_REDIRECT_URL = '/dashboard/'
 LOGOUT_REDIRECT_URL = '/'
+
+# Sign in with Microsoft, from the Entra ID app registration. The login page
+# shows the button once all four are set
+MICROSOFT_CLIENT_ID = config('MICROSOFT_CLIENT_ID', default='')
+MICROSOFT_CLIENT_SECRET = config('MICROSOFT_CLIENT_SECRET', default='')
+MICROSOFT_TENANT_ID = config('MICROSOFT_TENANT_ID', default='')
+# Must match the app registration's redirect URI exactly. Entra only allows
+# https (or http://localhost), so sign-ins started at another address move here
+MICROSOFT_REDIRECT_URI = config('MICROSOFT_REDIRECT_URI', default='')
+MICROSOFT_ALLOWED_DOMAINS = config(
+    'MICROSOFT_ALLOWED_DOMAINS', default='sinceregp.com', cast=Csv()
+)
 
 # SESSION_ENGINE = 'django.contrib.sessions.backends.db'
 
