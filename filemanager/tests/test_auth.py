@@ -42,7 +42,7 @@ class PasswordChangeRequiredTests(StorageTestCase):
         self.assertRedirects(response, reverse('dashboard'))
 
     def test_user_without_profile_must_change_password(self):
-        # e.g. accounts made by create_users or createsuperuser
+        # e.g. accounts made by createsuperuser
         self.login(User.objects.create_superuser('admin', 'a@x.com', 'pw'))
         self.assertRedirects(
             self.client.get(reverse('dashboard')),

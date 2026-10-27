@@ -19,6 +19,9 @@ vessel_files/
 # Backups
 backups/
 
+# One-off data files (staff lists etc.)
+imports/
+
 # Environment / secrets
 .env
 .env.example

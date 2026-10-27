@@ -19,7 +19,10 @@ ALLOWED_HOSTS = [
     '.sinceregp.com',  # sinceregp.com and every subdomain (all ours)
 ]
 
-CSRF_TRUSTED_ORIGINS = ['https://*.sinceregp.com']
+CSRF_TRUSTED_ORIGINS = [
+    'https://*.ngrok-free.dev',
+    'https://*.sinceregp.com',
+]
 
 INSTALLED_APPS = [
     'django.contrib.admin',

@@ -226,6 +226,9 @@ vessel_files_archive/
 # Uploaded media: signing copies, signed PDFs, signature images (this project)
 /media/
 
+# One-off data files for management commands, e.g. staff lists for create_users (this project)
+/imports/
+
 # Logs (this project)
 logs/
 
