@@ -34,4 +34,5 @@ urlpatterns = [
     path('delete/', views.delete_file, name='delete_file'),
     path('search/', views.search_files, name='search_files'),
     path('create-folder/', views.create_folder, name='create_folder'),
+    path('health/', views.health, name='health'),
 ]

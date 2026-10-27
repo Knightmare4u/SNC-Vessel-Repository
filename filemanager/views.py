@@ -21,7 +21,7 @@ from django.core.exceptions import (
     SuspiciousFileOperation,
     ValidationError,
 )
-from django.db import transaction
+from django.db import DatabaseError, connection, transaction
 from django.db.models import Q
 from django.http import (
     FileResponse,
@@ -35,7 +35,8 @@ from django.urls import reverse
 from django.utils.html import escape
 from django.utils.http import content_disposition_header
 from django.utils.text import get_valid_filename
-from django.views.decorators.http import require_POST
+from django.views.decorators.cache import never_cache
+from django.views.decorators.http import require_POST, require_safe
 from xlrd.xldate import xldate_as_datetime
 
 from .models import FileActivity, FolderPermission, UploadSession, UserProfile
@@ -1028,3 +1029,19 @@ def file_preview(request, file_path):
         response['Content-Disposition'] = disposition
 
     return response
+
+
+@never_cache
+@require_safe
+def health(request):
+    """For the uptime monitor: 200 when the database answers, 503 when it does not."""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT 1')
+    except DatabaseError:
+        # 503 instead of a 500, so an outage does not email ADMINS on every poll
+        logger.exception('Health check could not reach the database')
+        return HttpResponse(
+            'database unavailable', status=503, content_type='text/plain'
+        )
+    return HttpResponse('ok', content_type='text/plain')
