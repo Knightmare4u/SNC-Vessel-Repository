@@ -149,12 +149,36 @@ STORAGES = {
     },
 }
 
+EMAIL_BACKEND = config(
+    'EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend'
+)
+EMAIL_HOST = config('EMAIL_HOST', default='smtp.office365.com')
+EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='devops@sinceregp.com')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='devops@sinceregp.com')
+
+# Django errors (mainly unhandled 500s) are emailed to ADMINS when DEBUG is False
+ADMINS = [
+    ('DevOps', 'devops@sinceregp.com'),
+    ('Eduardo Bertrand', 'Eduardo.Bertrand@sinceregp.com'),
+    ('Grace Pan', 'grace.pan@sinceregp.com'),
+]
+SERVER_EMAIL = DEFAULT_FROM_EMAIL
+EMAIL_SUBJECT_PREFIX = '[SNSeaFiles] '
+
 LOG_DIR = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
 
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
+    'filters': {
+        'require_debug_false': {
+            '()': 'django.utils.log.RequireDebugFalse',
+        },
+    },
     'formatters': {
         'verbose': {
             'format': '{asctime} {levelname} {name} {message}',
@@ -174,6 +198,15 @@ LOGGING = {
             'use_gzip': True,
             'formatter': 'verbose',
         },
+        'mail_admins': {
+            'class': 'django.utils.log.AdminEmailHandler',
+            'level': 'ERROR',
+            'filters': ['require_debug_false'],
+        },
+        # Drops "Invalid HTTP_HOST header" errors from scanners
+        'null': {
+            'class': 'logging.NullHandler',
+        },
     },
     'root': {
         'handlers': ['console', 'file'],
@@ -181,8 +214,12 @@ LOGGING = {
     },
     'loggers': {
         'django': {
-            'handlers': ['console', 'file'],
+            'handlers': ['console', 'file', 'mail_admins'],
             'level': config('DJANGO_LOG_LEVEL', default='INFO'),
+            'propagate': False,
+        },
+        'django.security.DisallowedHost': {
+            'handlers': ['null'],
             'propagate': False,
         },
     },
