@@ -56,8 +56,7 @@ from .models import (
     UploadSession,
     UserProfile,
 )
-from .services import filesystem
-from .services import microsoft_auth
+from .services import filesystem, microsoft_auth
 from .services import signing as signing_service
 from .utils import (
     display_name,
@@ -410,15 +409,26 @@ def upload_file(request):
     folder_path = normalize_path(request.POST.get('folder_path', ''))
 
     if not has_permission(request.user, folder_path, 'write'):
+        logger.warning(
+            "Upload refused for %s to %s: no write permission",
+            request.user,
+            folder_path,
+        )
         return JsonResponse({'error': 'Permission denied'}, status=403)
 
     full_path = get_storage_path(folder_path)
 
     if is_in_archive(full_path):
+        logger.warning(
+            "Upload refused for %s to %s: folder is archived", request.user, folder_path
+        )
         return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
 
     folder = filesystem.resolve_folder(folder_path)
     if folder is None:
+        logger.warning(
+            "Upload refused for %s to %s: folder not found", request.user, folder_path
+        )
         return JsonResponse({'error': 'Folder not found'}, status=404)
 
     files = request.FILES.getlist('files')
@@ -431,6 +441,12 @@ def upload_file(request):
         try:
             filenames.append(get_valid_filename(file.name))
         except SuspiciousFileOperation:
+            logger.warning(
+                "Upload refused for %s to %s: invalid file name %r",
+                request.user,
+                folder_path,
+                file.name,
+            )
             return JsonResponse(
                 {'error': f'Invalid file name: {file.name}'}, status=400
             )
@@ -465,7 +481,9 @@ def upload_file(request):
             )
 
         except OSError:
-            logger.exception("Upload error for %s", file.name)
+            logger.exception(
+                "Upload error for %s to %s by %s", file.name, folder_path, request.user
+            )
             return JsonResponse({'error': f'Error uploading {file.name}'}, status=500)
 
     return JsonResponse(

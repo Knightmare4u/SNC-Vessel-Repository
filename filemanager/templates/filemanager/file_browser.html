@@ -860,8 +860,8 @@ async function createFolder() {
 
 // The current folder was deleted or renamed by someone else while this page
 // was open. Stay on the page and just tell the user, like OneDrive does.
-function handleFolderGone() {
-    showToast('❌ This folder no longer exists. It may have been deleted or renamed.', 'error');
+function handleFolderGone(errorId = '') {
+    showToast('❌ This folder no longer exists. It may have been deleted or renamed.' + errorId, 'error');
 }
 
 async function deleteFile(filePath, fileName) {
@@ -980,6 +980,10 @@ function handleFileUpload(files) {
     progressStatus.textContent = '';
     uploadProgress.style.display = 'block';
 
+    // Sent with the upload and shown on failure, to find this request in the logs
+    const requestId = Math.random().toString(36).slice(2, 10);
+    const errorId = ' (Error ID: ' + requestId + ')';
+
     const xhr = new XMLHttpRequest();
 
     xhr.upload.addEventListener('progress', function(e) {
@@ -1001,28 +1005,37 @@ function handleFileUpload(files) {
                 setTimeout(() => location.reload(), 1500);
             } else {
                 uploadProgress.style.display = 'none';
-                const msg = result ? (result.error || 'Unknown error') : 'Session expired, please log in again';
-                showToast(msg, 'error');
+                // Not JSON: redirected to the login or change-password page
+                const msg = result ? (result.error || 'Unknown error') : 'Your session has ended. Please refresh the page.';
+                showToast('❌ Upload failed: ' + msg + errorId, 'error');
             }
         } else if (xhr.status === 404) {
             uploadProgress.style.display = 'none';
-            handleFolderGone();
+            handleFolderGone(errorId);
         } else {
             uploadProgress.style.display = 'none';
             let result;
             try { result = JSON.parse(xhr.responseText); } catch { result = null; }
-            const msg = (result && result.error) || 'HTTP ' + xhr.status;
-            showToast('❌ Upload failed: ' + msg, 'error');
+            // Our JSON errors are written for users; Django and Caddy error pages are not
+            let msg = result && result.error;
+            if (!msg) {
+                if (xhr.status === 403) msg = 'Your session has changed. Please refresh the page and try again.';
+                else if (xhr.status === 413) msg = 'The file is too large.';
+                else if (xhr.status >= 502 && xhr.status <= 504) msg = 'The server is temporarily unavailable. Please try again later.';
+                else msg = 'Server error. Please contact IT.';
+            }
+            showToast('❌ Upload failed: ' + msg + errorId, 'error');
         }
     });
 
     xhr.addEventListener('error', function() {
         uploadProgress.style.display = 'none';
-        showToast('❌ Upload failed: ', 'error');
+        showToast('❌ Upload failed: network error, please try again' + errorId, 'error');
     });
 
     xhr.open('POST', "{% url 'upload_file' %}");
     xhr.setRequestHeader('X-CSRFToken', getCSRFToken());
+    xhr.setRequestHeader('X-Request-ID', requestId);
     xhr.send(formData);
 }
 

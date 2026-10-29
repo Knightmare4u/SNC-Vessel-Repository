@@ -36,6 +36,8 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # First, so log lines from every later middleware (e.g. CSRF) carry the ID
+    'filemanager.request_id.RequestIDMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -191,9 +193,12 @@ LOG_DIR.mkdir(exist_ok=True)
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
+    'filters': {
+        'request_id': {'()': 'filemanager.request_id.RequestIDFilter'},
+    },
     'formatters': {
         'verbose': {
-            'format': '{asctime} {levelname} {name} {message}',
+            'format': '{asctime} {levelname} [{request_id}] {name} {message}',
             'style': '{',
         },
     },
@@ -201,6 +206,7 @@ LOGGING = {
         'console': {
             'class': 'logging.StreamHandler',
             'formatter': 'verbose',
+            'filters': ['request_id'],
         },
         'file': {
             'class': 'concurrent_log_handler.ConcurrentTimedRotatingFileHandler',
@@ -209,6 +215,7 @@ LOGGING = {
             'backupCount': 30,
             'use_gzip': True,
             'formatter': 'verbose',
+            'filters': ['request_id'],
         },
     },
     'root': {
