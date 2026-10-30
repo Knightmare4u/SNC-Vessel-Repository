@@ -1,18 +1,60 @@
 #!/usr/bin/env bash
 # Back up the PostgreSQL database with pg_dump, verify it, and apply GFS retention.
 # Output goes to stdout; cron should redirect it, e.g. >> /var/log/backup/<system>.log 2>&1
+# Reports the result to Gatus when GATUS_URL and GATUS_TOKEN are set (environment or .env).
 set -euo pipefail
 
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
 }
 
-trap 'log "FAILED - unexpected error on line $LINENO"' ERR
+# Record the reason for on_exit to report, then stop
+fail() {
+    FAIL_REASON="$1"
+    log "FAILED - $1"
+    exit 1
+}
+
+trap 'FAIL_REASON="unexpected error on line $LINENO"; log "FAILED - $FAIL_REASON"' ERR
+
+# Gatus external endpoint this job reports to
+GATUS_KEY="backups_snseafiles-database"
+
+# Clean up and report the result to Gatus; reporting is skipped when Gatus is not configured
+on_exit() {
+    local status=$?
+    if [ -n "${TMP_FILE:-}" ]; then
+        rm -f "$TMP_FILE"
+    fi
+    if [ -z "${GATUS_URL:-}" ] || [ -z "${GATUS_TOKEN:-}" ]; then
+        return
+    fi
+    local args=(--data-urlencode "success=true")
+    if [ "$status" -ne 0 ]; then
+        args=(--data-urlencode "success=false" --data-urlencode "error=${FAIL_REASON:-exit code $status}")
+    fi
+    args+=(--data-urlencode "duration=${SECONDS}s")
+    curl -fsS -m 10 --retry 3 -o /dev/null -G -X POST "${args[@]}" \
+        -H "Authorization: Bearer $GATUS_TOKEN" \
+        "$GATUS_URL/api/v1/endpoints/$GATUS_KEY/external" \
+        || log "WARNING - failed to report result to Gatus"
+}
+trap on_exit EXIT
 
 # Project root directory (where this script is located); docker compose needs it as cwd
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 BACKUP_DIR="$PROJECT_DIR/backups"
+
+# Read one value from the project's .env; the file is not shell syntax, so it is not sourced
+env_value() {
+    [ -f "$PROJECT_DIR/.env" ] || return 0
+    sed -n "s/^$1=//p" "$PROJECT_DIR/.env" | tail -n 1 | tr -d "\r\"'"
+}
+
+# The environment takes precedence over .env
+GATUS_URL="${GATUS_URL:-$(env_value GATUS_URL)}"
+GATUS_TOKEN="${GATUS_TOKEN:-$(env_value GATUS_TOKEN)}"
 
 # GFS retention: every backup for 14 days, one per week for 8 weeks, one per month for 12 months
 KEEP_DAILY_DAYS=14
@@ -26,23 +68,19 @@ mkdir -p "$BACKUP_DIR"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 BACKUP_FILE="$BACKUP_DIR/db_${TIMESTAMP}.sql.gz"
 TMP_FILE="$BACKUP_FILE.tmp"
-trap 'rm -f "$TMP_FILE"' EXIT
 
 if ! docker compose exec -T db sh -c 'pg_dump --clean --if-exists -U "$POSTGRES_USER" "$POSTGRES_DB"' | gzip > "$TMP_FILE"; then
-    log "FAILED - pg_dump/gzip failed"
-    exit 1
+    fail "pg_dump/gzip failed"
 fi
 
 # Verify the archive is intact and the dump ran to completion
 # (pg_dump 16.10+ appends a \unrestrict line after the end marker, so check more than the last line)
 if ! gzip -t "$TMP_FILE"; then
-    log "FAILED - archive is corrupt"
-    exit 1
+    fail "archive is corrupt"
 fi
 tail_lines=$(gzip -dc "$TMP_FILE" | tail -n 20)
 if [[ "$tail_lines" != *"PostgreSQL database dump complete"* ]]; then
-    log "FAILED - dump is incomplete: end marker not found"
-    exit 1
+    fail "dump is incomplete: end marker not found"
 fi
 
 mv "$TMP_FILE" "$BACKUP_FILE"
