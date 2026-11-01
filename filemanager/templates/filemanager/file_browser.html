@@ -383,8 +383,8 @@
                                           data-filepath="{{ item.path }}"
                                           data-filename="{{ item.name }}"
                                           data-extension="{{ item.extension }}"
-                                          data-preview-url="{% url 'file_preview' item.path %}"
-                                          data-download-url="{% url 'download_file' item.path %}"
+                                          data-preview-url="{% url 'file_preview' item.uuid %}"
+                                          data-download-url="{% url 'download_file' item.uuid %}"
                                           onmouseover="this.style.textDecoration='underline'"
                                           onmouseout="this.style.textDecoration='none'"
                                           onclick="event.stopPropagation(); handlePreview(this.dataset.previewUrl, this.dataset.downloadUrl, this.dataset.filename, this.dataset.extension)">
@@ -418,11 +418,11 @@
                         {% if item.type == 'file' %}
                         <button type="button" class="row-action-btn download-btn"
                                 data-filepath="{{ item.path }}"
-                                data-download-url="{% url 'download_file' item.path %}"
+                                data-download-url="{% url 'download_file' item.uuid %}"
                                 title="Download">⬇️</button>
                         <button type="button" class="row-action-btn copy-link-btn"
                                 data-filepath="{{ item.path }}"
-                                data-download-url="{% url 'download_file' item.path %}"
+                                data-download-url="{% url 'download_file' item.uuid %}"
                                 title="Copy download link">🔗</button>
                         {% else %}
                         <button type="button" class="row-action-btn download-folder-btn"
@@ -438,12 +438,12 @@
                             {% if item.type == 'file' %}
                                 <button type="button" class="row-menu-item download-btn"
                                         data-filepath="{{ item.path }}"
-                                        data-download-url="{% url 'download_file' item.path %}">
+                                        data-download-url="{% url 'download_file' item.uuid %}">
                                     <span class="row-menu-icon">⬇️</span>Download
                                 </button>
                                 <button type="button" class="row-menu-item copy-link-btn"
                                         data-filepath="{{ item.path }}"
-                                        data-download-url="{% url 'download_file' item.path %}">
+                                        data-download-url="{% url 'download_file' item.uuid %}">
                                     <span class="row-menu-icon">🔗</span>Copy link
                                 </button>
                                 {% if item.signing_request %}

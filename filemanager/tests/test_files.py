@@ -1,5 +1,6 @@
 import io
 import os
+import uuid
 import zipfile
 from unittest import mock
 
@@ -279,34 +280,70 @@ class DeleteTests(FileOperationTestCase):
 
 class DownloadTests(FileOperationTestCase):
     def test_download(self):
-        response = self.client.get(reverse('download_file', args=['A/a.txt']))
+        file = filesystem.resolve_file('A/a.txt')
+        response = self.client.get(reverse('download_file', args=[file.uuid]))
         self.assertEqual(self.read_response(response), b'hello')
 
     def test_names_with_url_characters(self):
         # e.g. files copied straight onto the share
-        self.make_file('A/Report #3/Invoice 100%.pdf')
-        url = reverse('download_file', args=['A/Report #3/Invoice 100%.pdf'])
+        file = self.make_file('A/Report #3/Invoice 100%.pdf')
+        url = reverse('download_file', args=[file.uuid])
         self.assertEqual(self.read_response(self.client.get(url)), b'hello')
 
         response = self.client.get(reverse('search_files'), {'q': 'invoice'})
         [result] = response.json()['results']
         self.assertEqual(result['download_url'], url)
 
-    def test_preview_and_download_check_access_and_existence(self):
-        self.make_file('B/b.txt')
-        for view in ['file_preview', 'download_file']:
+    def test_links_survive_renames(self):
+        file = self.make_file('A/sub/c.txt')
+        url = reverse('download_file', args=[file.uuid])
+        self.assertEqual(self.rename('A/sub/c.txt', 'd.txt').status_code, 200)
+        self.assertEqual(self.rename('A/sub', 'sub2').status_code, 200)
+        self.assertEqual(self.read_response(self.client.get(url)), b'hello')
+
+    def test_links_stop_working_once_the_file_is_deleted(self):
+        file = filesystem.resolve_file('A/a.txt')
+        url = reverse('download_file', args=[file.uuid])
+        filesystem.delete_file(file, self.user)
+        self.assertEqual(self.client.get(url).status_code, 404)
+
+    def test_old_path_links_redirect_to_the_uuid_link(self):
+        file = self.make_file('A/Report #3/Invoice 100%.pdf')
+        for by_path, view in [
+            ('download_file_by_path', 'download_file'),
+            ('file_preview_by_path', 'file_preview'),
+        ]:
             with self.subTest(view=view):
-                response = self.client.get(reverse(view, args=['B/b.txt']))
+                response = self.client.get(
+                    reverse(by_path, args=['A/Report #3/Invoice 100%.pdf'])
+                )
+                self.assertRedirects(
+                    response,
+                    reverse(view, args=[file.uuid]),
+                    fetch_redirect_response=False,
+                )
+
+    def test_preview_and_download_check_access_and_existence(self):
+        file = self.make_file('B/b.txt')
+        for view, no_access, missing in [
+            ('download_file', file.uuid, uuid.uuid4()),
+            ('file_preview', file.uuid, uuid.uuid4()),
+            ('download_file_by_path', 'B/b.txt', 'A/missing.txt'),
+            ('file_preview_by_path', 'B/b.txt', 'A/missing.txt'),
+        ]:
+            with self.subTest(view=view):
+                response = self.client.get(reverse(view, args=[no_access]))
                 self.assertEqual(response.status_code, 403)
-                response = self.client.get(reverse(view, args=['A/missing.txt']))
+                response = self.client.get(reverse(view, args=[missing]))
                 self.assertEqual(response.status_code, 404)
 
     def test_file_missing_on_disk_returns_404(self):
         # e.g. removed from the shared folder outside the site
-        os.remove(filesystem.resolve_file('A/a.txt').file.path)
+        file = filesystem.resolve_file('A/a.txt')
+        os.remove(file.file.path)
         for view in ['file_preview', 'download_file']:
             with self.subTest(view=view), self.assertLogs('filemanager.views', 'ERROR'):
-                response = self.client.get(reverse(view, args=['A/a.txt']))
+                response = self.client.get(reverse(view, args=[file.uuid]))
                 self.assertEqual(response.status_code, 404)
 
         with self.assertLogs('filemanager.views', 'ERROR'):

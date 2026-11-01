@@ -13,8 +13,8 @@ class PreviewTests(StorageTestCase):
         self.login(self.make_user('u', [('/A', 'read')]))
 
     def preview(self, name, content):
-        self.make_file(f'A/{name}', content)
-        response = self.client.get(reverse('file_preview', args=[f'A/{name}']))
+        file = self.make_file(f'A/{name}', content)
+        response = self.client.get(reverse('file_preview', args=[file.uuid]))
         if response.streaming:
             self.read_response(response)
         return response
@@ -66,8 +66,8 @@ class PreviewTests(StorageTestCase):
 
     def test_range_requests(self):
         # Video seeking and PDF viewers ask for parts of the file
-        self.make_file('A/clip.mp4', b'0123456789')
-        url = reverse('file_preview', args=['A/clip.mp4'])
+        file = self.make_file('A/clip.mp4', b'0123456789')
+        url = reverse('file_preview', args=[file.uuid])
         for header, content_range, body in [
             ('bytes=2-5', 'bytes 2-5/10', b'2345'),
             ('bytes=7-', 'bytes 7-9/10', b'789'),

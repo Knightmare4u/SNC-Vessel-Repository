@@ -140,14 +140,15 @@ def is_on_disk(file):
     return False
 
 
-def get_item_urls(path, is_dir):
-    """URLs for a file browser item, built with reverse() so names are encoded."""
-    url_path = to_url_path(path)
-    if is_dir:
-        return {'browser_url': reverse('file_browser', args=[url_path])}
+def get_item_urls(item, path=None):
+    """URLs for a file browser item, built with reverse() so names are encoded.
+    Folders are linked by path; files by uuid, so their links still work after
+    a rename."""
+    if isinstance(item, Folder):
+        return {'browser_url': reverse('file_browser', args=[to_url_path(path)])}
     return {
-        'download_url': reverse('download_file', args=[url_path]),
-        'preview_url': reverse('file_preview', args=[url_path]),
+        'download_url': reverse('download_file', args=[item.uuid]),
+        'preview_url': reverse('file_preview', args=[item.uuid]),
     }
 
 
@@ -329,6 +330,7 @@ def file_browser(request, folder_path=''):
                 'name': file.name,
                 'type': 'file',
                 'path': posixpath.join(folder_path, file.name),
+                'uuid': file.uuid,
                 'size': format_file_size(file.size),
                 'size_bytes': file.size,
                 'modified': file.updated_at,
@@ -374,14 +376,15 @@ def file_browser(request, folder_path=''):
 
 
 @login_required
-def download_file(request, file_path):
-    file_path = normalize_path(file_path)
-    if not has_permission(request.user, os.path.dirname(file_path), 'read'):
+def download_file(request, file_uuid):
+    file = get_object_or_404(File, uuid=file_uuid, deleted_at__isnull=True)
+    folder_path = filesystem.get_path(file.folder)
+    if not has_permission(request.user, folder_path, 'read'):
         raise PermissionDenied
 
-    file = filesystem.resolve_file(file_path)
-    if file is None or not is_on_disk(file):
+    if not is_on_disk(file):
         raise Http404('File not found')
+    file_path = posixpath.join(folder_path, file.name)
 
     # Log download activity
     log_activity(
@@ -401,6 +404,20 @@ def download_file(request, file_path):
         filename=file.name,
     )
     return response
+
+
+@login_required
+def file_by_path(request, file_path, view_name):
+    """Links copied before files had a uuid name them by path; send them on to
+    the file's uuid link."""
+    file_path = normalize_path(file_path)
+    if not has_permission(request.user, os.path.dirname(file_path), 'read'):
+        raise PermissionDenied
+
+    file = filesystem.resolve_file(file_path)
+    if file is None:
+        raise Http404('File not found')
+    return redirect(view_name, file.uuid)
 
 
 @login_required
@@ -621,7 +638,7 @@ def search_files(request):
                 'icon': get_file_icon(file.extension),
                 'modified': file.updated_at.timestamp(),
                 'created': file.created_at.timestamp(),
-                **get_item_urls(rel_path, is_dir=False),
+                **get_item_urls(file),
             }
         )
 
@@ -717,7 +734,7 @@ def rename_file(request):
             {
                 'success': True,
                 'new_path': to_url_path(new_path),
-                **get_item_urls(new_path, is_folder),
+                **get_item_urls(item, new_path),
             }
         )
 
@@ -742,7 +759,7 @@ def rename_file(request):
             'success': True,
             'new_path': to_url_path(new_path),
             'modified': modified_str,
-            **get_item_urls(new_path, is_folder),
+            **get_item_urls(item, new_path),
         }
     )
 
@@ -851,7 +868,7 @@ def _iter_file_chunk(f, length, chunk_size=8192):
 
 
 @login_required
-def file_preview(request, file_path):
+def file_preview(request, file_uuid):
     def get_value(cell, wb):
         if cell.ctype == xlrd.XL_CELL_DATE:
             return xldate_as_datetime(cell.value, wb.datemode).strftime(
@@ -865,13 +882,14 @@ def file_preview(request, file_path):
             f'<{tag}>{escape(cell) if cell is not None else ""}</{tag}>' for cell in row
         )
 
-    file_path = normalize_path(file_path)
-    if not has_permission(request.user, os.path.dirname(file_path), 'read'):
+    file = get_object_or_404(File, uuid=file_uuid, deleted_at__isnull=True)
+    folder_path = filesystem.get_path(file.folder)
+    if not has_permission(request.user, folder_path, 'read'):
         raise PermissionDenied
 
-    file = filesystem.resolve_file(file_path)
-    if file is None or not is_on_disk(file):
+    if not is_on_disk(file):
         raise Http404('File not found')
+    file_path = posixpath.join(folder_path, file.name)
     full_path = file.file.path
 
     # Log once here so every preview type (docx/xlsx return early) is recorded

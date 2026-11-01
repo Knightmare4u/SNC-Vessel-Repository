@@ -182,7 +182,8 @@ class ArchiveTests(StorageTestCase):
         self.login(self.make_user('su', superuser=True))
         response = self.client.get(reverse('file_browser', args=['ARCHIVE/A']))
         self.assertEqual(response.status_code, 200)
-        url = reverse('download_file', args=['ARCHIVE/A/old.txt'])
+        file = filesystem.resolve_file('ARCHIVE/A/old.txt')
+        url = reverse('download_file', args=[file.uuid])
         self.assertEqual(self.read_response(self.client.get(url)), b'hello')
 
     def test_archive_is_hidden_from_other_users(self):
@@ -193,7 +194,8 @@ class ArchiveTests(StorageTestCase):
         self.assertEqual([item['name'] for item in response.context['items']], ['A'])
         response = self.client.get(reverse('file_browser', args=['ARCHIVE/A']))
         self.assertRedirects(response, reverse('dashboard'))
-        url = reverse('download_file', args=['ARCHIVE/A/old.txt'])
+        file = filesystem.resolve_file('ARCHIVE/A/old.txt')
+        url = reverse('download_file', args=[file.uuid])
         self.assertEqual(self.client.get(url).status_code, 403)
         response = self.client.get(reverse('search_files'), {'q': 'old'})
         self.assertEqual(response.json()['results'], [])

@@ -21,9 +21,22 @@ urlpatterns = [
     path('dashboard/', views.dashboard, name='dashboard'),
     path('browser/', views.file_browser, name='file_browser'),
     path('browser/<path:folder_path>/', views.file_browser, name='file_browser'),
-    path('download/<path:file_path>/', views.download_file, name='download_file'),
+    path('files/<uuid:file_uuid>/download/', views.download_file, name='download_file'),
+    path('files/<uuid:file_uuid>/preview/', views.file_preview, name='file_preview'),
+    # Links copied before files had a uuid
+    path(
+        'download/<path:file_path>/',
+        views.file_by_path,
+        {'view_name': 'download_file'},
+        name='download_file_by_path',
+    ),
+    path(
+        'preview/<path:file_path>/',
+        views.file_by_path,
+        {'view_name': 'file_preview'},
+        name='file_preview_by_path',
+    ),
     path('bulk-download/', views.bulk_download, name='bulk_download'),
-    path('preview/<path:file_path>/', views.file_preview, name='file_preview'),
     path('upload/', views.upload_file, name='upload_file'),
     path(
         'upload/progress/<str:session_id>/',

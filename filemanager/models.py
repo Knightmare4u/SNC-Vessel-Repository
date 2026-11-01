@@ -139,6 +139,8 @@ class Folder(models.Model):
 @cleanup.ignore
 class File(models.Model):
     folder = models.ForeignKey(Folder, on_delete=models.PROTECT, related_name='files')
+    # Used in links instead of the path, so they still work after a rename
+    uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     name = models.CharField(max_length=255)
     # Imported files keep their original path, which can be long
     file = models.FileField(

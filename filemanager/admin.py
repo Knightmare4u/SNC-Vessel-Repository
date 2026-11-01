@@ -258,9 +258,10 @@ class FileAdmin(ReadOnlyAdmin):
     ]
     list_select_related = ['folder', 'created_by']
     list_filter = [('deleted_at', admin.EmptyFieldListFilter)]
-    search_fields = ['name']
+    search_fields = ['name', '=uuid']
     # 'stored_as' replaces the file field, whose link would point under MEDIA_URL
     fields = [
+        'uuid',
         'folder',
         'name',
         'stored_as',
@@ -271,7 +272,7 @@ class FileAdmin(ReadOnlyAdmin):
         'deleted_by',
         'deleted_at',
     ]
-    readonly_fields = ['stored_as']
+    readonly_fields = ['uuid', 'stored_as']
 
     @admin.display(description='Path')
     def path(self, obj):

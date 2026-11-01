@@ -3,6 +3,7 @@
 import django.db.models.deletion
 import django.db.models.functions.text
 import filemanager.models
+import uuid
 from django.conf import settings
 from django.db import migrations, models
 
@@ -74,6 +75,10 @@ class Migration(migrations.Migration):
                         serialize=False,
                         verbose_name="ID",
                     ),
+                ),
+                (
+                    "uuid",
+                    models.UUIDField(default=uuid.uuid4, editable=False, unique=True),
                 ),
                 ("name", models.CharField(max_length=255)),
                 (
