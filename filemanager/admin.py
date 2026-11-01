@@ -236,11 +236,47 @@ class ReadOnlyAdmin(admin.ModelAdmin):
         return False
 
 
+class ReadOnlyInline(admin.TabularInline):
+    # A folder's contents, view-only for the same reason as ReadOnlyAdmin
+    extra = 0
+    show_change_link = True
+    ordering = ['name']
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class SubfolderInline(ReadOnlyInline):
+    model = Folder
+    fk_name = 'parent'
+    verbose_name = 'Subfolder'
+    verbose_name_plural = 'Subfolders'
+    fields = ['name', 'created_at', 'deleted_at']
+    readonly_fields = fields
+
+
+class FileInline(ReadOnlyInline):
+    model = File
+    fields = ['name', 'uuid', 'size_display', 'created_at', 'deleted_at']
+    readonly_fields = fields
+
+    @admin.display(description='Size')
+    def size_display(self, obj):
+        return format_file_size(obj.size)
+
+
 class FolderAdmin(ReadOnlyAdmin):
     list_display = ['name', 'path', 'created_by', 'created_at', 'deleted_at']
     list_select_related = ['parent', 'created_by']
     list_filter = [('deleted_at', admin.EmptyFieldListFilter)]
     search_fields = ['name']
+    inlines = [SubfolderInline, FileInline]
 
     @admin.display(description='Path')
     def path(self, obj):
