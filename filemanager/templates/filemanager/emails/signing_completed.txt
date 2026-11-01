@@ -1,0 +1,13 @@
+{% autoescape off %}All signers have signed {{ filename }}.
+{% if not written_back %}
+The original file was changed or removed during signing, so it was not replaced. Download the signed PDF from the signing request.
+{% endif %}
+Signers:
+{% for signer in signers %}  {{ signer.order }}. {{ signer.name }} - signed {{ signer.signed_at|date:"Y-m-d" }}
+{% endfor %}
+View the signing request here:
+{{ url }}
+
+--
+This is an automated message from SNSeaFiles. Please do not reply.
+{% endautoescape %}

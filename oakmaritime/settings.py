@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from decouple import config
+from decouple import Csv, config
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -19,7 +19,10 @@ ALLOWED_HOSTS = [
     '.sinceregp.com',  # sinceregp.com and every subdomain (all ours)
 ]
 
-CSRF_TRUSTED_ORIGINS = ['https://*.sinceregp.com']
+CSRF_TRUSTED_ORIGINS = [
+    'https://*.ngrok-free.dev',
+    'https://*.sinceregp.com',
+]
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -33,6 +36,8 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # First, so log lines from every later middleware (e.g. CSRF) carry the ID
+    'filemanager.request_id.RequestIDMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -120,6 +125,18 @@ LOGIN_URL = '/'
 LOGIN_REDIRECT_URL = '/dashboard/'
 LOGOUT_REDIRECT_URL = '/'
 
+# Sign in with Microsoft, from the Entra ID app registration. The login page
+# shows the button once all four are set
+MICROSOFT_CLIENT_ID = config('MICROSOFT_CLIENT_ID', default='')
+MICROSOFT_CLIENT_SECRET = config('MICROSOFT_CLIENT_SECRET', default='')
+MICROSOFT_TENANT_ID = config('MICROSOFT_TENANT_ID', default='')
+# Must match the app registration's redirect URI exactly. Entra only allows
+# https (or http://localhost), so sign-ins started at another address move here
+MICROSOFT_REDIRECT_URI = config('MICROSOFT_REDIRECT_URI', default='')
+MICROSOFT_ALLOWED_DOMAINS = config(
+    'MICROSOFT_ALLOWED_DOMAINS', default='sinceregp.com', cast=Csv()
+)
+
 # SESSION_ENGINE = 'django.contrib.sessions.backends.db'
 
 # FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024
@@ -127,6 +144,22 @@ LOGOUT_REDIRECT_URL = '/'
 # File storage settings
 FILE_STORAGE_ROOT = config('FILE_STORAGE_ROOT', default=BASE_DIR / 'vessel_files')
 ARCHIVE_ROOT = config('ARCHIVE_ROOT', default=BASE_DIR / 'vessel_files' / 'ARCHIVE')
+
+# Site address for links in emails, which are sent without a request to build them from
+BASE_URL = config('BASE_URL', default='http://127.0.0.1')
+
+# Email (signing notifications)
+EMAIL_BACKEND = config(
+    'EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend'
+)
+EMAIL_HOST = config('EMAIL_HOST', default='localhost')
+EMAIL_PORT = config('EMAIL_PORT', default=25, cast=int)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=False, cast=bool)
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='webmaster@localhost')
+# Seconds; without it an unresponsive mail server blocks the sending thread forever
+EMAIL_TIMEOUT = config('EMAIL_TIMEOUT', default=30, cast=int)
 
 SECURE_SSL_REDIRECT = False
 CSRF_COOKIE_SECURE = False
@@ -147,17 +180,12 @@ STORAGES = {
     'staticfiles': {
         'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
     },
+    # File contents, stored under random names (see filemanager.models.File)
+    'vessel': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+        'OPTIONS': {'location': FILE_STORAGE_ROOT},
+    },
 }
-
-EMAIL_BACKEND = config(
-    'EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend'
-)
-EMAIL_HOST = config('EMAIL_HOST', default='smtp.office365.com')
-EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
-EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
-EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='devops@sinceregp.com')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
-DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='devops@sinceregp.com')
 
 # Django errors (mainly unhandled 500s) are emailed to ADMINS when DEBUG is False
 ADMINS = [
@@ -175,13 +203,14 @@ LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
     'filters': {
+        'request_id': {'()': 'filemanager.request_id.RequestIDFilter'},
         'require_debug_false': {
             '()': 'django.utils.log.RequireDebugFalse',
         },
     },
     'formatters': {
         'verbose': {
-            'format': '{asctime} {levelname} {name} {message}',
+            'format': '{asctime} {levelname} [{request_id}] {name} {message}',
             'style': '{',
         },
     },
@@ -189,6 +218,7 @@ LOGGING = {
         'console': {
             'class': 'logging.StreamHandler',
             'formatter': 'verbose',
+            'filters': ['request_id'],
         },
         'file': {
             'class': 'concurrent_log_handler.ConcurrentTimedRotatingFileHandler',
@@ -197,6 +227,7 @@ LOGGING = {
             'backupCount': 30,
             'use_gzip': True,
             'formatter': 'verbose',
+            'filters': ['request_id'],
         },
         'mail_admins': {
             'class': 'django.utils.log.AdminEmailHandler',

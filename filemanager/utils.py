@@ -107,6 +107,11 @@ def log_activity(user, filename, filepath, activity_type, ip_address, file_size=
     )
 
 
+def display_name(user):
+    """How a user is shown everywhere: full name, falling back to the username."""
+    return user.get_full_name() or user.username
+
+
 def format_file_size(size_bytes):
     if size_bytes == 0:
         return '0 B'

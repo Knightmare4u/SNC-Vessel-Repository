@@ -112,6 +112,39 @@
             background: var(--dark-orange);
             transform: translateY(-2px);
         }
+
+        .divider {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin: 1.5rem 0;
+            color: var(--gray);
+            font-size: 0.85rem;
+        }
+
+        .divider::before,
+        .divider::after {
+            content: '';
+            flex: 1;
+            border-top: 1px solid #e5e7eb;
+        }
+
+        /* Microsoft's sign-in button: white, grey border, logo then text */
+        .btn-microsoft {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            background: var(--white);
+            color: #5e5e5e;
+            border: 1px solid #8c8c8c;
+            text-decoration: none;
+        }
+
+        .btn-microsoft:hover {
+            background: #f3f4f6;
+            transform: translateY(-2px);
+        }
         
         .alert {
             padding: 0.75rem;
@@ -181,7 +214,21 @@
                     Login to Vessel Portal
                 </button>
             </form>
-            
+
+            {% if microsoft_login_enabled %}
+            <div class="divider">or</div>
+            <a href="{% url 'microsoft_login' %}{% if next %}?next={{ next|urlencode }}{% endif %}"
+               class="btn btn-microsoft">
+                <svg width="21" height="21" viewBox="0 0 21 21" aria-hidden="true">
+                    <rect x="1" y="1" width="9" height="9" fill="#f25022"/>
+                    <rect x="11" y="1" width="9" height="9" fill="#7fba00"/>
+                    <rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>
+                    <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
+                </svg>
+                Sign in with Microsoft
+            </a>
+            {% endif %}
+
             <div class="watermark">
                 <p>Secure file management for SNC vessels  Copyrights SNC CSD - IT Department</p>
             </div>

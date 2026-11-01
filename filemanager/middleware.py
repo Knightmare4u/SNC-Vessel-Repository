@@ -2,17 +2,22 @@ from django.shortcuts import redirect
 from django.urls import reverse
 
 from .models import UserProfile
+from .services import microsoft_auth
 
 
 class PasswordChangeRequiredMiddleware:
-    """Redirect users who have not changed their initial password to the change form."""
+    """Redirect users who have not changed their initial password to the change form.
+
+    Not for users who signed in with Microsoft, who may have no password here."""
 
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
-        if request.user.is_authenticated and not self.has_changed_password(
-            request.user
+        if (
+            request.user.is_authenticated
+            and not request.session.get(microsoft_auth.SESSION_KEY)
+            and not self.has_changed_password(request.user)
         ):
             allowed_paths = {reverse('change_password'), reverse('logout')}
             if request.path not in allowed_paths:

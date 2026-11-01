@@ -1,0 +1,41 @@
+{% extends 'filemanager/emails/base.html' %}
+
+{% block title %}A document has been fully signed: {{ filename }}{% endblock %}
+
+{% block content %}
+<table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom: 16px;">
+    <tr>
+        <td width="48" height="48" align="center" style="width: 48px; height: 48px; border-radius: 50%; background: #e5f6ef; color: #16835d; font-size: 24px; font-weight: 900;">✓</td>
+    </tr>
+</table>
+
+<h1 style="margin: 0 0 8px; font-size: 22px;">Signing completed</h1>
+<p style="margin: 0; color: #6b7787; word-break: break-all;">All signers have signed <b style="color: #17212b;">{{ filename }}</b>.</p>
+
+{% if not written_back %}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top: 16px;">
+    <tr>
+        <td style="background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; border-radius: 8px; padding: 12px 14px;">
+            The original file was changed or removed during signing, so it was not replaced. Download the signed PDF from the signing request.
+        </td>
+    </tr>
+</table>
+{% endif %}
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top: 20px; border-collapse: collapse;">
+    <tr>
+        <th align="left" style="padding: 10px 8px; border-bottom: 1px solid #dfe4ea; color: #6b7787; font-size: 12px; font-weight: 600;">ORDER</th>
+        <th align="left" style="padding: 10px 8px; border-bottom: 1px solid #dfe4ea; color: #6b7787; font-size: 12px; font-weight: 600;">SIGNER</th>
+        <th align="left" style="padding: 10px 8px; border-bottom: 1px solid #dfe4ea; color: #6b7787; font-size: 12px; font-weight: 600;">SIGNED ON</th>
+    </tr>
+    {% for signer in signers %}
+    <tr>
+        <td style="padding: 12px 8px; border-bottom: 1px solid #dfe4ea;">{{ signer.order }}</td>
+        <td style="padding: 12px 8px; border-bottom: 1px solid #dfe4ea;"><b>{{ signer.name }}</b></td>
+        <td style="padding: 12px 8px; border-bottom: 1px solid #dfe4ea;">{{ signer.signed_at|date:"Y-m-d" }}</td>
+    </tr>
+    {% endfor %}
+</table>
+
+{% include 'filemanager/emails/_button.html' with label='View signing request' %}
+{% endblock %}

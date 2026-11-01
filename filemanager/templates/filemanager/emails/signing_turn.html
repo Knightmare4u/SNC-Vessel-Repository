@@ -1,0 +1,27 @@
+{% extends 'filemanager/emails/base.html' %}
+
+{% block title %}A document is waiting for your signature: {{ filename }}{% endblock %}
+
+{% block content %}
+{% if waiting_days %}
+<h1 style="margin: 0 0 8px; font-size: 22px;">Still waiting for your signature</h1>
+<p style="margin: 0 0 20px; color: #6b7787;">Hello {{ recipient_name }}, this document has been waiting for your signature for {{ waiting_days }} day{{ waiting_days|pluralize }}.</p>
+{% else %}
+<h1 style="margin: 0 0 8px; font-size: 22px;">Your turn to sign</h1>
+<p style="margin: 0 0 20px; color: #6b7787;">Hello {{ recipient_name }}, {{ sender_name }} has asked you to sign this document.</p>
+{% endif %}
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+    <tr>
+        <td style="border: 1px solid #dfe4ea; border-radius: 9px; padding: 14px 16px; word-break: break-all;">
+            📕 <b>{{ filename }}</b>
+        </td>
+    </tr>
+</table>
+
+<p style="margin: 14px 0 0;">
+    <span style="display: inline-block; padding: 6px 12px; border-radius: 9px; background: #fff7e6; color: #7a4e00;">Order {{ signing_order }} of {{ signer_count }}</span>
+</p>
+
+{% include 'filemanager/emails/_button.html' with label='✍ Sign document' %}
+{% endblock %}

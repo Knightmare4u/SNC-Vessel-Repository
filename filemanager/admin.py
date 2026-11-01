@@ -1,30 +1,36 @@
-import os
+import posixpath
 
 from django import forms
-from django.conf import settings
-from django.contrib import admin
+from django.contrib import admin, messages
+from django.contrib.admin import helpers
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
+from django.db import transaction
+from django.template.response import TemplateResponse
 
-from .models import FileActivity, FolderPermission, UserProfile
+from .models import (
+    File,
+    FileActivity,
+    Folder,
+    FolderPermission,
+    Signer,
+    SigningActivity,
+    SigningRequest,
+    UserProfile,
+)
+from .services import filesystem
+from .services import signing as signing_service
 from .utils import format_file_size, get_storage_path, is_in_archive, normalize_path
 
 
 def get_folder_choices():
-    """Every existing folder under the storage root, except the archive."""
-    root = os.path.abspath(settings.FILE_STORAGE_ROOT)
-    paths = ['/']
-    for dirpath, dirnames, _ in os.walk(root):
-        # Pruning dirnames in place also stops os.walk descending into them
-        dirnames[:] = [
-            name
-            for name in dirnames
-            if not is_in_archive(os.path.join(dirpath, name))
-        ]
-        for name in dirnames:
-            rel = os.path.relpath(os.path.join(dirpath, name), root)
-            paths.append(normalize_path(rel))
+    """Every existing folder, except the archive."""
+    paths = [
+        path
+        for path in filesystem.get_folder_paths().values()
+        if not is_in_archive(get_storage_path(path))
+    ]
     return sorted(paths, key=str.lower)
 
 
@@ -65,10 +71,9 @@ class FolderPermissionForm(forms.ModelForm):
     def clean_folder_path(self):
         folder_path = normalize_path(self.cleaned_data['folder_path'])
         if 'folder_path' in self.changed_data:
-            full_path = get_storage_path(folder_path)
-            if not os.path.isdir(full_path):
+            if filesystem.resolve_folder(folder_path) is None:
                 raise ValidationError('Folder does not exist')
-            if is_in_archive(full_path):
+            if is_in_archive(get_storage_path(folder_path)):
                 raise ValidationError('Archive folders cannot be selected')
         return folder_path
 
@@ -218,10 +223,211 @@ class FileActivityAdmin(admin.ModelAdmin):
         return format_file_size(obj.file_size) if obj.file_size else "-"
 
 
+class ReadOnlyAdmin(admin.ModelAdmin):
+    # View-only: changes go through the site, which keeps names unique,
+    # moves permissions on rename and only soft-deletes
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class ReadOnlyInline(admin.TabularInline):
+    # A folder's contents, view-only for the same reason as ReadOnlyAdmin
+    extra = 0
+    show_change_link = True
+    ordering = ['name']
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class SubfolderInline(ReadOnlyInline):
+    model = Folder
+    fk_name = 'parent'
+    verbose_name = 'Subfolder'
+    verbose_name_plural = 'Subfolders'
+    fields = ['name', 'created_at', 'deleted_at']
+    readonly_fields = fields
+
+
+class FileInline(ReadOnlyInline):
+    model = File
+    fields = ['name', 'uuid', 'size_display', 'created_at', 'deleted_at']
+    readonly_fields = fields
+
+    @admin.display(description='Size')
+    def size_display(self, obj):
+        return format_file_size(obj.size)
+
+
+class FolderAdmin(ReadOnlyAdmin):
+    list_display = ['name', 'path', 'created_by', 'created_at', 'deleted_at']
+    list_select_related = ['parent', 'created_by']
+    list_filter = [('deleted_at', admin.EmptyFieldListFilter)]
+    search_fields = ['name']
+    inlines = [SubfolderInline, FileInline]
+
+    @admin.display(description='Path')
+    def path(self, obj):
+        return filesystem.get_path(obj)
+
+
+class FileAdmin(ReadOnlyAdmin):
+    list_display = [
+        'name',
+        'path',
+        'size_display',
+        'created_by',
+        'created_at',
+        'deleted_at',
+    ]
+    list_select_related = ['folder', 'created_by']
+    list_filter = [('deleted_at', admin.EmptyFieldListFilter)]
+    search_fields = ['name', '=uuid']
+    # 'stored_as' replaces the file field, whose link would point under MEDIA_URL
+    fields = [
+        'uuid',
+        'folder',
+        'name',
+        'stored_as',
+        'size',
+        'created_by',
+        'created_at',
+        'updated_at',
+        'deleted_by',
+        'deleted_at',
+    ]
+    readonly_fields = ['uuid', 'stored_as']
+
+    @admin.display(description='Path')
+    def path(self, obj):
+        return posixpath.join(filesystem.get_path(obj.folder), obj.name)
+
+    @admin.display(description='Size')
+    def size_display(self, obj):
+        return format_file_size(obj.size)
+
+    @admin.display(description='Stored as')
+    def stored_as(self, obj):
+        return obj.file.name
+
+
+class SignerAdminForm(forms.ModelForm):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # A signature already made stays with the person who made it
+        if self.instance.status == Signer.Status.SIGNED:
+            self.fields['user'].disabled = True
+
+
+class SignerInline(admin.TabularInline):
+    """Only lets an admin replace who signs (e.g. someone who left). Order and
+    status are kept by the signing flow, so editing them could break it."""
+
+    model = Signer
+    form = SignerAdminForm
+    extra = 0
+    can_delete = False
+    fields = ['signing_order', 'user', 'status', 'signed_at']
+    readonly_fields = ['signing_order', 'status', 'signed_at']
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+class SigningActivityInline(admin.TabularInline):
+    model = SigningActivity
+    extra = 0
+    fields = ['created_at', 'actor', 'action', 'detail']
+    readonly_fields = fields
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+class SigningRequestAdmin(admin.ModelAdmin):
+    """Lets an admin repair a stuck request (e.g. replace a signer who left), or
+    reset it to undo the signing entirely."""
+
+    actions = ['reset_signing']
+
+    list_display = ['path', 'created_by', 'status', 'sent_at', 'completed_at']
+    list_select_related = ['created_by', 'file__folder']
+    list_filter = ['status']
+    search_fields = ['file__name', 'created_by__username']
+    readonly_fields = [
+        'created_by',
+        'file',
+        'original_file',
+        'original_sha',
+        'signed_file',
+        'signed_sha',
+        'created_at',
+        'sent_at',
+        'completed_at',
+    ]
+    inlines = [SignerInline, SigningActivityInline]
+
+    @admin.display(description='Path')
+    def path(self, obj):
+        return posixpath.join(filesystem.get_path(obj.file.folder), obj.file.name)
+
+    @admin.action(
+        description='Reset signing (restore the original file and delete the request)',
+        permissions=['delete'],
+    )
+    def reset_signing(self, request, queryset):
+        # Restoring overwrites files, so confirm first, as "Delete selected" does
+        if not request.POST.get('post'):
+            return TemplateResponse(
+                request,
+                'admin/filemanager/signingrequest/reset_confirmation.html',
+                {
+                    **self.admin_site.each_context(request),
+                    'title': 'Are you sure?',
+                    'opts': self.model._meta,
+                    'queryset': queryset,
+                    'action_checkbox_name': helpers.ACTION_CHECKBOX_NAME,
+                },
+            )
+
+        reset = 0
+        for signing_request in queryset:
+            try:
+                # log_deletions() must run before the delete; a failed reset
+                # rolls the log entry back with it
+                with transaction.atomic():
+                    self.log_deletions(
+                        request, SigningRequest.objects.filter(pk=signing_request.pk)
+                    )
+                    signing_service.reset(signing_request)
+            except ValidationError as e:
+                self.message_user(request, e.messages[0], messages.ERROR)
+            else:
+                reset += 1
+        if reset:
+            self.message_user(request, f'Reset {reset} signing request(s).')
+
+
 admin.site.unregister(User)
 admin.site.register(User, CustomUserAdmin)
 admin.site.register(FolderPermission, FolderPermissionAdmin)
 admin.site.register(FileActivity, FileActivityAdmin)
+admin.site.register(Folder, FolderAdmin)
+admin.site.register(File, FileAdmin)
+admin.site.register(SigningRequest, SigningRequestAdmin)
 
 # Custom admin site header
 admin.site.site_header = "SNSeaFile Administration"

@@ -4,8 +4,8 @@ import mimetypes
 import os
 import posixpath
 import re
-import shutil
-from datetime import datetime
+from pathlib import PurePosixPath
+from urllib.parse import urlsplit
 
 import mammoth
 import openpyxl
@@ -13,7 +13,8 @@ import xlrd
 import zipstream
 from django.conf import settings
 from django.contrib import messages
-from django.contrib.auth import update_session_auth_hash
+from django.contrib.auth import login, update_session_auth_hash
+from django.contrib.auth import views as auth_views
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import PasswordChangeForm
 from django.core.exceptions import (
@@ -21,8 +22,9 @@ from django.core.exceptions import (
     SuspiciousFileOperation,
     ValidationError,
 )
+from django.core.paginator import Paginator
 from django.db import DatabaseError, connection, transaction
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.http import (
     FileResponse,
     Http404,
@@ -30,17 +32,35 @@ from django.http import (
     JsonResponse,
     StreamingHttpResponse,
 )
-from django.shortcuts import redirect, render
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils import timezone
 from django.utils.html import escape
-from django.utils.http import content_disposition_header
+from django.utils.http import (
+    content_disposition_header,
+    url_has_allowed_host_and_scheme,
+)
 from django.utils.text import get_valid_filename
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_POST, require_safe
 from xlrd.xldate import xldate_as_datetime
 
-from .models import FileActivity, FolderPermission, UploadSession, UserProfile
+from .forms import SignerFormSet, SignForm, SigningCreateForm, SigningFieldsForm
+from .models import (
+    File,
+    FileActivity,
+    Folder,
+    Signer,
+    SigningActivity,
+    SigningField,
+    SigningRequest,
+    UploadSession,
+    UserProfile,
+)
+from .services import filesystem, microsoft_auth
+from .services import signing as signing_service
 from .utils import (
+    display_name,
     format_file_size,
     get_storage_path,
     get_user_permissions,
@@ -55,6 +75,7 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 ARCHIVE_READ_ONLY = 'The archive is read-only'
+SIGNING_LOCKED = 'This file, or a file in this folder, has been sent for signing and cannot be deleted'
 
 FILE_TYPE_CATEGORIES = {
     'document': ['.doc', '.docx', '.txt'],
@@ -87,19 +108,48 @@ FILE_ICONS = {
     '.txt': '📄',  # Plain text, not a Word document
 }
 
+# How many file names the activity log lists for a zip download
+DOWNLOAD_LOG_MAX_NAMES = 5
+
+RANGE_HEADER_RE = re.compile(r'bytes=(\d*)-(\d*)')
+
+SIGNING_LIST_TABS = {
+    'to_sign': 'Waiting for me',
+    'sent': 'Sent by me',
+    'notified': 'Notified',
+}
+
+MICROSOFT_UNAVAILABLE = (
+    'Microsoft sign-in is unavailable right now. Please try again later.'
+)
+# Session keys holding a Microsoft sign-in until Microsoft sends the user back
+MICROSOFT_FLOW_KEY = 'microsoft_auth_flow'
+MICROSOFT_NEXT_KEY = 'microsoft_auth_next'
+
 
 def get_file_icon(extension):
     return FILE_ICONS.get(extension, '📄')
 
 
-def get_item_urls(path, is_dir):
-    """URLs for a file browser item, built with reverse() so names are encoded."""
-    url_path = to_url_path(path)
-    if is_dir:
-        return {'browser_url': reverse('file_browser', args=[url_path])}
+def is_on_disk(file):
+    """The row outlives its file on disk if someone removes it outside the site."""
+    if file.file.storage.exists(file.file.name):
+        return True
+    logger.error(
+        "File %s (id %s) is missing on disk: %s", file.name, file.pk, file.file.name
+    )
+    return False
+
+
+def get_item_urls(item, path=None):
+    """URLs for a file browser item, built with reverse() so names are encoded.
+    Folders are linked by path; files by uuid, so their links still work after
+    a rename."""
+    if isinstance(item, Folder):
+        return {'browser_url': reverse('file_browser', args=[to_url_path(path)])}
     return {
-        'download_url': reverse('download_file', args=[url_path]),
-        'preview_url': reverse('file_preview', args=[url_path]),
+        'download_url': reverse('download_file', args=[item.uuid]),
+        'preview_url': reverse('file_preview', args=[item.uuid]),
     }
 
 
@@ -124,17 +174,73 @@ def change_password(request):
     return render(request, 'filemanager/change_password.html', {'form': form})
 
 
+class LoginView(auth_views.LoginView):
+    template_name = 'filemanager/login.html'
+    redirect_authenticated_user = True
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['microsoft_login_enabled'] = microsoft_auth.is_enabled()
+        return context
+
+
+def microsoft_login(request):
+    if not microsoft_auth.is_enabled():
+        raise Http404
+    redirect_uri = urlsplit(settings.MICROSOFT_REDIRECT_URI)
+    if request.get_host() != redirect_uri.netloc:
+        # e.g. the IP address: Microsoft sends users back to the redirect URI's
+        # site only, so the flow must be kept in that site's session
+        return redirect(
+            f'{redirect_uri.scheme}://{redirect_uri.netloc}{request.get_full_path()}'
+        )
+
+    next_url = request.GET.get('next', '')
+    if not url_has_allowed_host_and_scheme(next_url, {request.get_host()}):
+        next_url = ''
+    try:
+        flow = microsoft_auth.start_flow()
+    except Exception:
+        logger.exception('Could not start Microsoft sign-in')
+        messages.error(request, MICROSOFT_UNAVAILABLE)
+        return redirect('login')
+    request.session[MICROSOFT_FLOW_KEY] = flow
+    request.session[MICROSOFT_NEXT_KEY] = next_url
+    return redirect(flow['auth_uri'])
+
+
+def microsoft_callback(request):
+    # One use only, so a reloaded or replayed callback is refused
+    flow = request.session.pop(MICROSOFT_FLOW_KEY, None)
+    next_url = request.session.pop(MICROSOFT_NEXT_KEY, '')
+    if flow is None:
+        messages.error(request, 'Your Microsoft sign-in expired. Please try again.')
+        return redirect('login')
+    try:
+        user = microsoft_auth.authenticate(flow, request.GET.dict())
+    except microsoft_auth.MicrosoftLoginError as e:
+        messages.error(request, str(e))
+        return redirect('login')
+    except Exception:
+        logger.exception('Microsoft sign-in failed')
+        messages.error(request, MICROSOFT_UNAVAILABLE)
+        return redirect('login')
+
+    login(request, user, backend='django.contrib.auth.backends.ModelBackend')
+    request.session[microsoft_auth.SESSION_KEY] = True
+    logger.info('User %s signed in with Microsoft', user.username)
+    return redirect(next_url or settings.LOGIN_REDIRECT_URL)
+
+
 @login_required
 def dashboard(request):
-    base_path = settings.FILE_STORAGE_ROOT
     user_permissions = get_user_permissions(request.user)
 
     # Get accessible folders
     accessible_folders = []
     for perm in user_permissions:
         folder_path = perm['folder_path']
-        full_path = os.path.join(base_path, folder_path.lstrip('/'))
-        if os.path.exists(full_path):
+        if filesystem.resolve_folder(folder_path):
             accessible_folders.append(
                 {
                     'name': os.path.basename(folder_path),
@@ -163,15 +269,33 @@ def file_browser(request, folder_path=''):
         messages.error(request, 'You do not have permission to access this folder')
         return redirect('dashboard')
 
-    full_path = get_storage_path(folder_path)
-
-    in_archive = is_in_archive(full_path)
-
-    if not folder_path:
-        # Storage root may not exist yet on a fresh deployment
-        os.makedirs(full_path, exist_ok=True)
-    elif not os.path.isdir(full_path):
+    folder = filesystem.resolve_folder(folder_path)
+    if folder is None:
         raise Http404('Folder not found')
+
+    in_archive = is_in_archive(get_storage_path(folder_path))
+
+    subfolders = folder.children.filter(deleted_at__isnull=True).annotate(
+        folder_count=Count(
+            'children', filter=Q(children__deleted_at__isnull=True), distinct=True
+        ),
+        file_count=Count(
+            'files', filter=Q(files__deleted_at__isnull=True), distinct=True
+        ),
+    )
+    files = folder.files.filter(deleted_at__isnull=True)
+
+    # A file sent for signing links to its request instead of starting a new one
+    signing_requests = {
+        r.file_id: r for r in SigningRequest.objects.filter(file__in=files)
+    }
+    visible_requests = set()
+    if signing_requests:
+        visible_requests = set(
+            signing_service.visible_requests(request.user)
+            .filter(pk__in=[r.pk for r in signing_requests.values()])
+            .values_list('pk', flat=True)
+        )
 
     # Get files and folders
     items = []
@@ -179,66 +303,50 @@ def file_browser(request, folder_path=''):
     file_count = 0
     folder_count = 0
 
-    try:
-        names = os.listdir(full_path)
-    except OSError:
-        logger.exception("Error accessing folder %s", full_path)
-        messages.error(request, 'Error accessing folder')
-        names = []
+    for subfolder in subfolders:
+        rel_path = posixpath.join(folder_path, subfolder.name)
+        archive = is_in_archive(get_storage_path(rel_path))
+        # Only superusers can open the archive, so others don't see it
+        if archive and not request.user.is_superuser:
+            continue
+        items.append(
+            {
+                'name': subfolder.name,
+                'type': 'folder',
+                'path': rel_path,
+                'size': f'{subfolder.folder_count + subfolder.file_count} items',
+                'size_bytes': 0,
+                'modified': subfolder.updated_at,
+                'created_at': subfolder.created_at,
+                'icon': '📁',
+                'is_archive': archive,
+            }
+        )
+        folder_count += 1
 
-    for item in names:
-        item_path = os.path.join(full_path, item)
-        rel_path = os.path.join(folder_path, item).replace('\\', '/')
-
-        try:
-            if os.path.isdir(item_path):
-                # Only superusers can open the archive, so others don't see it
-                if is_in_archive(item_path) and not request.user.is_superuser:
-                    continue
-                try:
-                    size = f'{len(os.listdir(item_path))} items'
-                except OSError:
-                    # Folder is fine, its contents just can't be counted
-                    logger.warning("Cannot list folder %s", item_path)
-                    size = '—'
-                items.append(
-                    {
-                        'name': item,
-                        'type': 'folder',
-                        'path': rel_path,
-                        'size': size,
-                        'size_bytes': 0,
-                        'modified': datetime.fromtimestamp(os.path.getmtime(item_path)),
-                        'created_at': datetime.fromtimestamp(
-                            os.path.getctime(item_path)
-                        ),
-                        'icon': '📁',
-                        'is_archive': is_in_archive(item_path),
-                    }
-                )
-                folder_count += 1
-            else:
-                size = os.path.getsize(item_path)
-                items.append(
-                    {
-                        'name': item,
-                        'type': 'file',
-                        'path': rel_path,
-                        'size': format_file_size(size),
-                        'size_bytes': size,
-                        'modified': datetime.fromtimestamp(os.path.getmtime(item_path)),
-                        'created_at': datetime.fromtimestamp(
-                            os.path.getctime(item_path)
-                        ),
-                        'extension': os.path.splitext(item)[1].lower(),
-                        'icon': get_file_icon(os.path.splitext(item)[1].lower()),
-                    }
-                )
-                total_size += size
-                file_count += 1
-        except OSError:
-            # One unreadable entry must not hide the rest of the folder
-            logger.warning("Skipping unreadable entry %s", item_path)
+    for file in files:
+        signing_request = signing_requests.get(file.id)
+        items.append(
+            {
+                'name': file.name,
+                'type': 'file',
+                'path': posixpath.join(folder_path, file.name),
+                'uuid': file.uuid,
+                'size': format_file_size(file.size),
+                'size_bytes': file.size,
+                'modified': file.updated_at,
+                'created_at': file.created_at,
+                'extension': file.extension,
+                'icon': get_file_icon(file.extension),
+                'signing_request': signing_request,
+                'signing_visible': (
+                    signing_request is not None
+                    and signing_request.pk in visible_requests
+                ),
+            }
+        )
+        total_size += file.size
+        file_count += 1
 
     # Sort: folders first, then files
     items.sort(key=lambda x: (x['type'] != 'folder', x['name'].lower()))
@@ -269,34 +377,48 @@ def file_browser(request, folder_path=''):
 
 
 @login_required
-def download_file(request, file_path):
+def download_file(request, file_uuid):
+    file = get_object_or_404(File, uuid=file_uuid, deleted_at__isnull=True)
+    folder_path = filesystem.get_path(file.folder)
+    if not has_permission(request.user, folder_path, 'read'):
+        raise PermissionDenied
+
+    if not is_on_disk(file):
+        raise Http404('File not found')
+    file_path = posixpath.join(folder_path, file.name)
+
+    # Log download activity
+    log_activity(
+        request.user,
+        file.name,
+        file_path,
+        'download',
+        request.META.get('REMOTE_ADDR'),
+        file.size,
+    )
+
+    content_type, encoding = mimetypes.guess_type(file.name)
+    response = FileResponse(
+        file.file.open('rb'),
+        content_type=content_type,
+        as_attachment=True,
+        filename=file.name,
+    )
+    return response
+
+
+@login_required
+def file_by_path(request, file_path, view_name):
+    """Links copied before files had a uuid name them by path; send them on to
+    the file's uuid link."""
     file_path = normalize_path(file_path)
     if not has_permission(request.user, os.path.dirname(file_path), 'read'):
         raise PermissionDenied
 
-    full_path = get_storage_path(file_path)
-
-    if os.path.isfile(full_path):
-        # Log download activity
-        log_activity(
-            request.user,
-            os.path.basename(file_path),
-            file_path,
-            'download',
-            request.META.get('REMOTE_ADDR'),
-            os.path.getsize(full_path),
-        )
-
-        content_type, encoding = mimetypes.guess_type(full_path)
-        response = FileResponse(
-            open(full_path, 'rb'),
-            content_type=content_type,
-            as_attachment=True,
-            filename=os.path.basename(file_path),
-        )
-        return response
-
-    raise Http404('File not found')
+    file = filesystem.resolve_file(file_path)
+    if file is None:
+        raise Http404('File not found')
+    return redirect(view_name, file.uuid)
 
 
 @login_required
@@ -305,14 +427,26 @@ def upload_file(request):
     folder_path = normalize_path(request.POST.get('folder_path', ''))
 
     if not has_permission(request.user, folder_path, 'write'):
+        logger.warning(
+            "Upload refused for %s to %s: no write permission",
+            request.user,
+            folder_path,
+        )
         return JsonResponse({'error': 'Permission denied'}, status=403)
 
     full_path = get_storage_path(folder_path)
 
     if is_in_archive(full_path):
+        logger.warning(
+            "Upload refused for %s to %s: folder is archived", request.user, folder_path
+        )
         return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
 
-    if not os.path.isdir(full_path):
+    folder = filesystem.resolve_folder(folder_path)
+    if folder is None:
+        logger.warning(
+            "Upload refused for %s to %s: folder not found", request.user, folder_path
+        )
         return JsonResponse({'error': 'Folder not found'}, status=404)
 
     files = request.FILES.getlist('files')
@@ -325,56 +459,24 @@ def upload_file(request):
         try:
             filenames.append(get_valid_filename(file.name))
         except SuspiciousFileOperation:
+            logger.warning(
+                "Upload refused for %s to %s: invalid file name %r",
+                request.user,
+                folder_path,
+                file.name,
+            )
             return JsonResponse(
                 {'error': f'Invalid file name: {file.name}'}, status=400
             )
 
     for file, filename in zip(files, filenames):
         try:
-            file_path = os.path.join(full_path, filename)
-
-            # Exclusive create ('xb') so a concurrent upload is never overwritten
-            counter = 1
-            name, ext = os.path.splitext(filename)
-            while True:
-                try:
-                    destination = open(file_path, 'xb')
-                    break
-                except FileExistsError:
-                    pass
-                except PermissionError:
-                    # Windows raises this instead when a folder has the name
-                    if not os.path.isdir(file_path):
-                        raise
-                filename = f"{name}_{counter}{ext}"
-                file_path = os.path.join(full_path, filename)
-                counter += 1
-
-            # Save file
-            written = 0
-
-            try:
-                with destination:
-                    for chunk in file.chunks():
-                        destination.write(chunk)
-                        written += len(chunk)
-            except Exception:
-                os.remove(file_path)  # Don't leave a partial file behind
-                raise
-
-            if written != file.size:
-                logger.warning(
-                    "Size mismatch for %s: expected %s, wrote %s",
-                    file_path,
-                    file.size,
-                    written,
-                )
-
-            file_size = os.path.getsize(file_path)
+            saved = filesystem.upload_file(folder, file, filename, request.user)
+            filename, file_size = saved.name, saved.size
             total_size += file_size
 
             # Log upload activity
-            relative_path = os.path.join(folder_path, filename).replace('\\', '/')
+            relative_path = posixpath.join(folder_path, filename)
             log_activity(
                 request.user,
                 filename,
@@ -397,7 +499,9 @@ def upload_file(request):
             )
 
         except OSError:
-            logger.exception("Upload error for %s", file.name)
+            logger.exception(
+                "Upload error for %s to %s by %s", file.name, folder_path, request.user
+            )
             return JsonResponse({'error': f'Error uploading {file.name}'}, status=500)
 
     return JsonResponse(
@@ -453,46 +557,32 @@ def delete_file(request):
     if is_in_archive(full_path):
         return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
 
-    try:
-        if not os.path.exists(full_path):
-            return JsonResponse({'error': 'File/folder not found'}, status=404)
+    item = filesystem.resolve(item_path)
+    if item is None:
+        return JsonResponse({'error': 'File/folder not found'}, status=404)
 
-        file_size = os.path.getsize(full_path) if os.path.isfile(full_path) else 0
+    if signing_service.is_locked(item):
+        return JsonResponse({'error': SIGNING_LOCKED}, status=403)
 
-        # Build archive destination path, mirroring the original structure
-        archive_dest = get_storage_path(item_path, root=settings.ARCHIVE_ROOT)
+    with transaction.atomic():
+        signing_service.delete_drafts(item)
+        if isinstance(item, Folder):
+            filesystem.delete_folder(item, request.user)
+            file_size = 0
+        else:
+            filesystem.delete_file(item, request.user)
+            file_size = item.size
 
-        # Avoid overwriting existing archive entries by appending a timestamp
-        if os.path.exists(archive_dest):
-            name, ext = os.path.splitext(archive_dest)
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            archive_dest = f'{name}_{timestamp}{ext}'
+    log_activity(
+        request.user,
+        item.name,
+        item_path,
+        'delete',
+        request.META.get('REMOTE_ADDR'),
+        file_size,
+    )
 
-        os.makedirs(os.path.dirname(archive_dest), exist_ok=True)
-        with transaction.atomic():
-            if os.path.isdir(full_path):
-                # Grants on a deleted folder must not carry over to a new
-                # folder created later with the same name
-                FolderPermission.objects.filter(
-                    Q(folder_path=item_path)
-                    | Q(folder_path__startswith=item_path + '/')
-                ).delete()
-            # A failed move rolls the permission delete back
-            shutil.move(full_path, archive_dest)
-
-        log_activity(
-            request.user,
-            os.path.basename(item_path),
-            item_path,
-            'delete',
-            request.META.get('REMOTE_ADDR'),
-            file_size,
-        )
-
-        return JsonResponse({'success': True})
-    except OSError:
-        logger.exception("Delete failed for %s", item_path)
-        return JsonResponse({'error': 'Delete failed'}, status=500)
+    return JsonResponse({'success': True})
 
 
 @login_required
@@ -504,126 +594,54 @@ def search_files(request):
     file_type = request.GET.get('type', '')
     folder_filter = request.GET.get('folder', '')
 
-    base_path = os.path.realpath(settings.FILE_STORAGE_ROOT)
-
-    results = []
-    seen = set()
-
     allowed_exts = FILE_TYPE_CATEGORIES.get(file_type, []) if file_type else []
-    user_permissions = get_user_permissions(request.user)
 
-    # -------------------------
-    # Safe join (avoid path traversal + symlink escape)
-    # -------------------------
-    def safe_join(base, relative_path):
-        target = os.path.realpath(os.path.join(base, relative_path.lstrip('/')))
-
-        if target != base and not target.startswith(base + os.sep):
-            return None
-
-        return target
-
-    # -------------------------
-    # Collect results (safe walk)
-    # -------------------------
-    def collect_results(search_path):
-        if not search_path or not os.path.exists(search_path):
-            return
-
-        for root, _, files in os.walk(search_path, followlinks=False):
-            # Only superusers can open the archive, so others don't find files in it
-            if is_in_archive(root) and not request.user.is_superuser:
-                continue
-
-            # Ensure traversal never escapes the storage root
-            root_real_path = os.path.realpath(root)
-            if root_real_path != base_path and not root_real_path.startswith(
-                base_path + os.sep
-            ):
-                continue
-
-            for file in files:
-                if query.lower() not in file.lower():
-                    continue
-
-                file_path = os.path.join(root, file)
-                file_real = os.path.realpath(file_path)
-
-                # Ensure file remains inside the storage root
-                if file_real != base_path and not file_real.startswith(
-                    base_path + os.sep
-                ):
-                    continue
-
-                rel_path = os.path.relpath(file_real, base_path).replace('\\', '/')
-
-                # Prevent duplicate results
-                if rel_path in seen:
-                    continue
-
-                # File type filtering
-                ext = os.path.splitext(file)[1].lower()
-                if allowed_exts and ext not in allowed_exts:
-                    continue
-
-                try:
-                    stat = os.stat(file_real)
-                except (FileNotFoundError, PermissionError, OSError):
-                    continue
-
-                seen.add(rel_path)
-
-                results.append(
-                    {
-                        'name': file,
-                        'path': rel_path,
-                        'folder': '/' + os.path.dirname(rel_path),
-                        'size': stat.st_size,
-                        'formatted_size': format_file_size(stat.st_size),
-                        'extension': ext,
-                        'icon': get_file_icon(ext),
-                        'modified': stat.st_mtime,
-                        'created': stat.st_ctime,
-                        **get_item_urls(rel_path, is_dir=False),
-                    }
-                )
-
-    # -------------------------
-    # Search within a specific folder
-    # -------------------------
     if folder_filter:
         folder = normalize_path(folder_filter)
 
         if not has_permission(request.user, folder, 'read'):
             return JsonResponse({'error': 'Permission denied'}, status=403)
 
-        collect_results(get_storage_path(folder))
-
-    # -------------------------
-    # Search across all permitted folders
-    # -------------------------
+        scopes = [folder]
     else:
-        permitted = sorted(
-            perm['folder_path'].rstrip('/')
-            for perm in user_permissions
-            if perm['permission'] in ['read', 'write', 'admin']
+        # Every grant includes read access
+        scopes = [
+            normalize_path(perm['folder_path'])
+            for perm in get_user_permissions(request.user)
+        ]
+
+    folder_paths = filesystem.get_folder_paths()
+    files = File.objects.filter(deleted_at__isnull=True, name__icontains=query)
+
+    results = []
+    for file in files.order_by('name'):
+        if allowed_exts and file.extension not in allowed_exts:
+            continue
+
+        folder_path = folder_paths[file.folder_id]
+        if not any(PurePosixPath(folder_path).is_relative_to(s) for s in scopes):
+            continue
+
+        # Only superusers can open the archive, so others don't find files in it
+        in_archive = is_in_archive(get_storage_path(folder_path))
+        if in_archive and not request.user.is_superuser:
+            continue
+
+        rel_path = to_url_path(posixpath.join(folder_path, file.name))
+        results.append(
+            {
+                'name': file.name,
+                'path': rel_path,
+                'folder': folder_path,
+                'size': file.size,
+                'formatted_size': format_file_size(file.size),
+                'extension': file.extension,
+                'icon': get_file_icon(file.extension),
+                'modified': file.updated_at.timestamp(),
+                'created': file.created_at.timestamp(),
+                **get_item_urls(file),
+            }
         )
-
-        deduped = []
-
-        for path in permitted:
-            if any(
-                path == parent or path.startswith(parent + '/') for parent in deduped
-            ):
-                continue
-
-            deduped.append(path)
-
-        for path in deduped:
-            target_path = safe_join(base_path, path)
-
-            if target_path:
-                collect_results(target_path)
 
     return JsonResponse({'results': results})
 
@@ -653,21 +671,15 @@ def create_folder(request):
         return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
 
     # The parent may have been deleted while the user's page was open
-    if not os.path.isdir(get_storage_path(folder_path)):
+    parent = filesystem.resolve_folder(folder_path)
+    if parent is None:
         return JsonResponse({'error': 'Folder not found'}, status=404)
 
-    if os.path.exists(full_path):
-        return JsonResponse(
-            {'error': 'A folder with that name already exists'}, status=400
-        )
-
     try:
-        # mkdir, not makedirs: never recreate missing parent folders
-        os.mkdir(full_path)
-        return JsonResponse({'success': True})
-    except OSError:
-        logger.exception("Could not create folder %s", full_path)
-        return JsonResponse({'error': 'Could not create folder'}, status=500)
+        filesystem.create_folder(parent, folder_name, request.user)
+    except ValidationError as e:
+        return JsonResponse({'error': e.messages[0]}, status=400)
+    return JsonResponse({'success': True})
 
 
 @login_required
@@ -694,8 +706,11 @@ def rename_file(request):
 
     full_old_path = get_storage_path(old_path)
 
+    item = filesystem.resolve(old_path)
+    is_folder = isinstance(item, Folder)
+
     # Folders keep the user's name; files are sanitized like uploads
-    if os.path.isdir(full_old_path):
+    if is_folder:
         try:
             validate_name(new_name)
         except ValidationError as e:
@@ -712,75 +727,42 @@ def rename_file(request):
     if is_in_archive(full_old_path) or is_in_archive(full_new_path):
         return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
 
-    if not os.path.exists(full_old_path):
+    if item is None:
         return JsonResponse({'error': 'File/Folder not found'}, status=404)
 
-    if full_old_path == full_new_path:
+    if new_name == item.name:
         return JsonResponse(
             {
                 'success': True,
                 'new_path': to_url_path(new_path),
-                **get_item_urls(new_path, os.path.isdir(full_new_path)),
+                **get_item_urls(item, new_path),
             }
-        )
-
-    # samefile: on case-insensitive filesystems a case-only rename "exists" already
-    if os.path.exists(full_new_path) and not os.path.samefile(
-        full_old_path, full_new_path
-    ):
-        return JsonResponse(
-            {'error': 'A file/folder with that name already exists'}, status=400
         )
 
     try:
-        with transaction.atomic():
-            if os.path.isdir(full_old_path):
-                old_folder_path = old_path
-                new_folder_path = new_path
+        if is_folder:
+            filesystem.rename_folder(item, new_name)
+        else:
+            filesystem.rename_file(item, new_name)
+    except ValidationError as e:
+        return JsonResponse({'error': e.messages[0]}, status=400)
 
-                permissions = FolderPermission.objects.select_for_update().filter(
-                    Q(folder_path=old_folder_path)
-                    | Q(folder_path__startswith=old_folder_path + '/')
-                )
-
-                perms_to_update = []
-
-                for perm in permissions:
-                    perm.folder_path = (
-                        new_folder_path + perm.folder_path[len(old_folder_path) :]
-                    )
-                    perms_to_update.append(perm)
-
-                if perms_to_update:
-                    FolderPermission.objects.bulk_update(
-                        perms_to_update, ['folder_path']
-                    )
-
-            os.rename(full_old_path, full_new_path)
-
-        os.utime(full_new_path)
-        modified_str = datetime.fromtimestamp(os.path.getmtime(full_new_path)).strftime(
-            '%b %d, %Y %H:%M'
-        )
-        log_activity(
-            request.user,
-            f'{os.path.basename(old_path)} → {new_name}',
-            new_path,
-            'rename',
-            request.META.get('REMOTE_ADDR'),
-        )
-        return JsonResponse(
-            {
-                'success': True,
-                'new_path': to_url_path(new_path),
-                'modified': modified_str,
-                **get_item_urls(new_path, os.path.isdir(full_new_path)),
-            }
-        )
-
-    except OSError:
-        logger.exception("Rename failed for %s", old_path)
-        return JsonResponse({'error': 'Rename failed'}, status=500)
+    modified_str = timezone.localtime(item.updated_at).strftime('%b %d, %Y %H:%M')
+    log_activity(
+        request.user,
+        f'{os.path.basename(old_path)} → {new_name}',
+        new_path,
+        'rename',
+        request.META.get('REMOTE_ADDR'),
+    )
+    return JsonResponse(
+        {
+            'success': True,
+            'new_path': to_url_path(new_path),
+            'modified': modified_str,
+            **get_item_urls(item, new_path),
+        }
+    )
 
 
 @login_required
@@ -794,11 +776,14 @@ def bulk_download(request):
     file_paths = [normalize_path(p) for p in file_paths]
 
     # All-or-nothing: never hand out a zip that silently leaves files out
+    items = []
     for file_path in file_paths:
         if not has_permission(request.user, os.path.dirname(file_path), 'read'):
             raise PermissionDenied
-        if not os.path.exists(get_storage_path(file_path)):
+        item = filesystem.resolve(file_path)
+        if item is None:
             raise Http404('File not found')
+        items.append(item)
 
     zs = zipstream.ZipStream()
     total_size = 0
@@ -815,27 +800,33 @@ def bulk_download(request):
         return candidate
 
     # Selected items go at the top level of the zip, as they appear on screen
-    for file_path in file_paths:
-        full_path = get_storage_path(file_path)
-        top_name = unique_name(posixpath.basename(file_path))
-        if os.path.isfile(full_path):
-            zs.add_path(full_path, arcname=top_name)
-            total_size += os.path.getsize(full_path)
-        elif os.path.isdir(full_path):
-            for root, _, files in os.walk(full_path):
-                for filename in files:
-                    file_full = os.path.join(root, filename)
-                    rel = os.path.relpath(file_full, full_path).replace('\\', '/')
-                    zs.add_path(file_full, arcname=f'{top_name}/{rel}', recurse=False)
-                    total_size += os.path.getsize(file_full)
+    entries = []
+    for item in items:
+        top_name = unique_name(item.name)
+        if isinstance(item, Folder):
+            entries += [
+                (f'{top_name}/{rel}', file) for rel, file in filesystem.walk(item)
+            ]
+        else:
+            entries.append((top_name, item))
+
+    # Check before streaming: a missing file would break the zip halfway.
+    # A list, not a generator, so every missing file gets logged
+    if not all([is_on_disk(file) for _, file in entries]):
+        raise Http404('File not found')
+
+    for arcname, file in entries:
+        zs.add_path(file.file.path, arcname=arcname, recurse=False)
+        total_size += file.size
 
     current_folder = os.path.dirname(file_paths[0].rstrip('/\\')) or '/'
 
-    MAX_NAMES_SHOWN = 5
-    names = [os.path.basename(p.rstrip('/\\')) for p in file_paths[:MAX_NAMES_SHOWN]]
+    names = [
+        os.path.basename(p.rstrip('/\\')) for p in file_paths[:DOWNLOAD_LOG_MAX_NAMES]
+    ]
     name_summary = ', '.join(names)
-    if len(file_paths) > MAX_NAMES_SHOWN:
-        name_summary += f', +{len(file_paths) - MAX_NAMES_SHOWN} more'
+    if len(file_paths) > DOWNLOAD_LOG_MAX_NAMES:
+        name_summary += f', +{len(file_paths) - DOWNLOAD_LOG_MAX_NAMES} more'
 
     log_activity(
         request.user,
@@ -846,12 +837,14 @@ def bulk_download(request):
         total_size,
     )
 
+    # A single folder is named after itself, as when zipping one on Windows
+    zip_name = 'download.zip'
+    if len(items) == 1 and isinstance(items[0], Folder):
+        zip_name = f'{items[0].name}.zip'
+
     response = StreamingHttpResponse(zs, content_type='application/zip')
-    response['Content-Disposition'] = 'attachment; filename="download.zip"'
+    response['Content-Disposition'] = content_disposition_header(True, zip_name)
     return response
-
-
-RANGE_HEADER_RE = re.compile(r'bytes=(\d*)-(\d*)')
 
 
 def needs_sandbox(content_type):
@@ -876,7 +869,7 @@ def _iter_file_chunk(f, length, chunk_size=8192):
 
 
 @login_required
-def file_preview(request, file_path):
+def file_preview(request, file_uuid):
     def get_value(cell, wb):
         if cell.ctype == xlrd.XL_CELL_DATE:
             return xldate_as_datetime(cell.value, wb.datemode).strftime(
@@ -890,26 +883,27 @@ def file_preview(request, file_path):
             f'<{tag}>{escape(cell) if cell is not None else ""}</{tag}>' for cell in row
         )
 
-    file_path = normalize_path(file_path)
-    if not has_permission(request.user, os.path.dirname(file_path), 'read'):
+    file = get_object_or_404(File, uuid=file_uuid, deleted_at__isnull=True)
+    folder_path = filesystem.get_path(file.folder)
+    if not has_permission(request.user, folder_path, 'read'):
         raise PermissionDenied
 
-    full_path = get_storage_path(file_path)
-
-    if not os.path.isfile(full_path):
+    if not is_on_disk(file):
         raise Http404('File not found')
+    file_path = posixpath.join(folder_path, file.name)
+    full_path = file.file.path
 
     # Log once here so every preview type (docx/xlsx return early) is recorded
     log_activity(
         request.user,
-        os.path.basename(file_path),
+        file.name,
         file_path,
         'view',
         request.META.get('REMOTE_ADDR'),
-        os.path.getsize(full_path),
+        file.size,
     )
 
-    ext = os.path.splitext(full_path)[1].lower()
+    ext = file.extension
     if ext == '.docx':
         try:
             with open(full_path, 'rb') as f:
@@ -946,23 +940,26 @@ def file_preview(request, file_path):
                         f'<div class="table-wrap"><table>{"".join(rows_html)}</table></div>'
                     )
             else:
-                wb = openpyxl.load_workbook(full_path, read_only=True, data_only=True)
-                # read_only keeps the file open; close it even if reading fails
-                try:
-                    for sheet_name in wb.sheetnames:
-                        ws = wb[sheet_name]
-                        rows_html = []
-                        for i, row in enumerate(ws.iter_rows(values_only=True)):
-                            if all(cell in ('', None) for cell in row):
-                                continue
-                            rows_html.append(f'<tr>{render_row(row, i)}</tr>')
+                # An open file, not the path: openpyxl checks a path's extension,
+                # and the stored name may have none or another one (e.g. renamed)
+                with open(full_path, 'rb') as f:
+                    wb = openpyxl.load_workbook(f, read_only=True, data_only=True)
+                    # read_only keeps reading the file; close it even if reading fails
+                    try:
+                        for sheet_name in wb.sheetnames:
+                            ws = wb[sheet_name]
+                            rows_html = []
+                            for i, row in enumerate(ws.iter_rows(values_only=True)):
+                                if all(cell in ('', None) for cell in row):
+                                    continue
+                                rows_html.append(f'<tr>{render_row(row, i)}</tr>')
 
-                        sheets_html.append(
-                            f'<h3>{escape(sheet_name)}</h3>'
-                            f'<div class="table-wrap"><table>{"".join(rows_html)}</table></div>'
-                        )
-                finally:
-                    wb.close()
+                            sheets_html.append(
+                                f'<h3>{escape(sheet_name)}</h3>'
+                                f'<div class="table-wrap"><table>{"".join(rows_html)}</table></div>'
+                            )
+                    finally:
+                        wb.close()
         except Exception:
             # Uploaded files are untrusted and the parsers raise many error types
             logger.exception("Preview failed for %s", full_path)
@@ -985,13 +982,13 @@ def file_preview(request, file_path):
         response['Content-Security-Policy'] = 'sandbox'
         return response
 
-    content_type, _ = mimetypes.guess_type(full_path)
+    content_type, _ = mimetypes.guess_type(file.name)
     if ext in ('.csv', '.tsv', '.log', '.md'):
         content_type = 'text/plain; charset=utf-8'
     elif not content_type:
         content_type = 'application/octet-stream'
 
-    file_size = os.path.getsize(full_path)
+    file_size = file.size
     range_match = RANGE_HEADER_RE.fullmatch(request.META.get('HTTP_RANGE', ''))
 
     if range_match and (range_match.group(1) or range_match.group(2)):
@@ -1024,11 +1021,321 @@ def file_preview(request, file_path):
     response['Accept-Ranges'] = 'bytes'
     if needs_sandbox(content_type):
         response['Content-Security-Policy'] = 'sandbox'
-    disposition = content_disposition_header(False, os.path.basename(file_path))
+    disposition = content_disposition_header(False, file.name)
     if disposition:
         response['Content-Disposition'] = disposition
 
     return response
+
+
+# Signing
+
+
+def get_visible_request(user, pk):
+    """The request if the user created it, signs it or is notified of it; 404
+    otherwise, so other users cannot tell whether it exists."""
+    return get_object_or_404(signing_service.visible_requests(user), pk=pk)
+
+
+@login_required
+def signing_list(request):
+    user = request.user
+    tab_querysets = {
+        # A subquery, not filter(signers__...): that join would be shared with
+        # the signer counts below, so they would only count this user's row
+        'to_sign': SigningRequest.objects.filter(
+            pk__in=Signer.objects.filter(
+                user=user,
+                status=Signer.Status.PENDING,
+                signing_request__status=SigningRequest.Status.IN_PROGRESS,
+            ).values('signing_request')
+        ),
+        'sent': SigningRequest.objects.filter(created_by=user),
+        'notified': SigningRequest.objects.filter(notify_users=user).exclude(
+            status=SigningRequest.Status.DRAFT
+        ),
+    }
+    tabs = dict(SIGNING_LIST_TABS)
+    # Only people allowed to start signing requests have sent any
+    if not user.has_perm(signing_service.REQUEST_SIGNATURES):
+        del tabs['sent']
+    tab = request.GET.get('tab')
+    if tab not in tabs:
+        tab = 'to_sign'
+
+    signing_requests = (
+        tab_querysets[tab]
+        .select_related('created_by', 'file')
+        .annotate(
+            signer_count=Count('signers', distinct=True),
+            signed_count=Count(
+                'signers',
+                filter=Q(signers__status=Signer.Status.SIGNED),
+                distinct=True,
+            ),
+        )
+        .order_by('-created_at')
+    )
+    page = Paginator(signing_requests, 10).get_page(request.GET.get('page'))
+
+    return render(
+        request,
+        'filemanager/signing/list.html',
+        {
+            'tab': tab,
+            'tabs': [
+                {
+                    'key': key,
+                    'label': label,
+                    'count': tab_querysets[key].count(),
+                }
+                for key, label in tabs.items()
+            ],
+            'page': page,
+        },
+    )
+
+
+@login_required
+def signing_create(request):
+    if request.method == 'POST':
+        form = SigningCreateForm(request.POST, user=request.user)
+        formset = SignerFormSet(request.POST, prefix='signers')
+        if form.is_valid() and formset.is_valid():
+            signers = [f.cleaned_data['user'] for f in formset.ordered_forms]
+            details = {
+                'source_path': form.cleaned_data['source_path'],
+                'signers': signers,
+                'notify_users': list(form.cleaned_data['notify_users']),
+                'actor': request.user,
+            }
+            manual = (
+                form.cleaned_data['placement_mode']
+                == SigningRequest.PlacementMode.MANUAL
+            )
+            try:
+                if manual:
+                    # Saved as a draft; it is sent once the boxes are placed
+                    signing_request = signing_service.create_draft(
+                        placement_mode=SigningRequest.PlacementMode.MANUAL, **details
+                    )
+                else:
+                    signing_request = signing_service.create_and_send(**details)
+            except ValidationError as e:
+                form.add_error(None, e)
+            else:
+                if manual:
+                    return redirect('signing_fields', pk=signing_request.pk)
+                return _sent_redirect(request, signing_request)
+        source_path = form.data.get('source_path', '')
+    else:
+        source_path = normalize_path(request.GET.get('path', ''))
+        try:
+            signing_service.validate_source(request.user, source_path)
+        except ValidationError as e:
+            messages.error(request, e.messages[0])
+            return redirect('file_browser')
+        form = SigningCreateForm(
+            initial={'source_path': source_path}, user=request.user
+        )
+        # The sender usually signs first; they can change or remove the row
+        formset = SignerFormSet(prefix='signers', initial=[{'user': request.user.pk}])
+
+    folder = to_url_path(posixpath.dirname(source_path))
+    return render(
+        request,
+        'filemanager/signing/create.html',
+        {
+            'form': form,
+            'formset': formset,
+            'filename': posixpath.basename(source_path),
+            'cancel_url': (
+                reverse('file_browser', args=[folder])
+                if folder
+                else reverse('file_browser')
+            ),
+        },
+    )
+
+
+def _sent_redirect(request, signing_request):
+    # Nothing has been sent to anyone yet when the sender signs first
+    if signing_request.signers.first().user == request.user:
+        messages.success(request, 'Signing set up. You are the first to sign.')
+    else:
+        messages.success(request, 'Signing request sent.')
+    return redirect('signing_detail', pk=signing_request.pk)
+
+
+@login_required
+def signing_fields(request, pk):
+    """Step 2 of manual placement: drag a box onto the PDF for each signer."""
+    signing_request = get_object_or_404(
+        SigningRequest,
+        pk=pk,
+        created_by=request.user,
+        status=SigningRequest.Status.DRAFT,
+    )
+    signers = list(signing_request.signers.select_related('user'))
+
+    if request.method == 'POST':
+        form = SigningFieldsForm(request.POST)
+        if form.is_valid():
+            try:
+                # Saved even if sending fails, so the boxes are not lost
+                signing_service.save_fields(signing_request, form.cleaned_data['boxes'])
+                signing_service.send(signing_request, request.user)
+            except ValidationError as e:
+                form.add_error(None, e)
+            else:
+                return _sent_redirect(request, signing_request)
+    else:
+        form = SigningFieldsForm()
+
+    return render(
+        request,
+        'filemanager/signing/fields.html',
+        {
+            'signing_request': signing_request,
+            'form': form,
+            'signers_data': [
+                {
+                    'id': signer.pk,
+                    'order': signer.signing_order,
+                    'name': display_name(signer.user),
+                }
+                for signer in signers
+            ],
+            'boxes_data': [
+                {
+                    'signer': field.signer_id,
+                    'field_type': field.field_type,
+                    'page': field.page,
+                    'x': field.x,
+                    'y': field.y,
+                    'width': field.width,
+                    'height': field.height,
+                }
+                for field in SigningField.objects.filter(signer__in=signers)
+            ],
+        },
+    )
+
+
+@login_required
+@require_POST
+def signing_delete(request, pk):
+    signing_request = get_object_or_404(
+        SigningRequest,
+        pk=pk,
+        created_by=request.user,
+        status=SigningRequest.Status.DRAFT,
+    )
+    folder = to_url_path(filesystem.get_path(signing_request.file.folder))
+    signing_service.delete_draft(signing_request)
+    messages.success(request, 'Draft deleted.')
+    return redirect(
+        reverse('file_browser', args=[folder]) if folder else reverse('file_browser')
+    )
+
+
+@login_required
+def signing_sign(request, pk):
+    signing_request = get_visible_request(request.user, pk)
+    signer = signing_request.signers.filter(user=request.user).first()
+
+    # Participants who cannot sign right now get told why, instead of a 404
+    if signing_request.status != SigningRequest.Status.IN_PROGRESS:
+        reason = 'This document is no longer waiting for signatures.'
+    elif signer is None:
+        reason = 'You are not a signer of this document.'
+    elif signer.status == Signer.Status.SIGNED:
+        reason = 'You have already signed this document.'
+    elif signer.status == Signer.Status.WAITING:
+        reason = 'It is not your turn to sign yet.'
+    else:
+        reason = None
+    if reason:
+        messages.info(request, reason)
+        return redirect('signing_detail', pk=signing_request.pk)
+
+    if request.method == 'POST':
+        form = SignForm(request.POST, request.FILES, user=request.user)
+        if form.is_valid():
+            try:
+                signing_service.sign(
+                    signing_request=signing_request,
+                    actor=request.user,
+                    signature_png=form.cleaned_data['signature_png'],
+                    save_as_default=form.cleaned_data['save_as_default'],
+                )
+            except ValidationError as e:
+                form.add_error(None, e)
+            else:
+                messages.success(request, 'Your signature has been applied.')
+                return redirect('signing_detail', pk=signing_request.pk)
+    else:
+        form = SignForm(user=request.user)
+
+    return render(
+        request,
+        'filemanager/signing/sign.html',
+        {
+            'signing_request': signing_request,
+            'signer': signer,
+            'signer_count': signing_request.signers.count(),
+            'signed_count': signing_request.signers.filter(
+                status=Signer.Status.SIGNED
+            ).count(),
+            'form': form,
+            'saved_signature_url': signing_service.saved_signature_data_url(
+                request.user
+            ),
+            'manual': signing_request.placement_mode
+            == SigningRequest.PlacementMode.MANUAL,
+            # Only this signer's boxes; other people's are not shown
+            'my_boxes': list(
+                signer.fields.values('field_type', 'page', 'x', 'y', 'width', 'height')
+            ),
+        },
+    )
+
+
+@login_required
+def signing_detail(request, pk):
+    signing_request = get_visible_request(request.user, pk)
+    signers = list(signing_request.signers.select_related('user'))
+    signed_count = sum(s.status == Signer.Status.SIGNED for s in signers)
+    completed = signing_request.activities.filter(
+        action=SigningActivity.Action.COMPLETED
+    ).first()
+
+    return render(
+        request,
+        'filemanager/signing/detail.html',
+        {
+            'signing_request': signing_request,
+            'signers': signers,
+            'signed_count': signed_count,
+            'my_turn': any(
+                s.user == request.user and s.status == Signer.Status.PENDING
+                for s in signers
+            ),
+            'written_back': completed.detail.get('written_back') if completed else None,
+        },
+    )
+
+
+@login_required
+def signing_pdf(request, pk):
+    signing_request = get_visible_request(request.user, pk)
+    # The signed copy holds every signature so far; before anyone signs, the original
+    pdf = signing_request.signed_file or signing_request.original_file
+    return FileResponse(
+        pdf.open('rb'),
+        content_type='application/pdf',
+        filename=signing_request.filename,
+    )
 
 
 @never_cache

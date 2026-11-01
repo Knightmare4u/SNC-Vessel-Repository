@@ -45,7 +45,7 @@ services:
       --timeout 600
       --capture-output
       --access-logfile logs/access.log
-      --access-logformat '%(p)s %(h)s %(t)s \"%(r)s\" %(s)s %(L)s seconds'
+      --access-logformat '%(p)s %(h)s %(t)s \"%(r)s\" %(s)s %(L)s seconds %({x-request-id}i)s'
       --error-logfile logs/error.log"
     ports:
       - "8090:8000"
@@ -57,9 +57,12 @@ services:
     volumes:
       - ./media:/app/media
       - ${VESSEL_STORAGE_PATH:-./vessel_files}:/app/vessel_files
-      - ./logs:/app/logs
+      # A volume, not a shared folder: log rotation renames the open log file,
+      # which a VirtualBox shared folder refuses ("Text file busy")
+      - logs:/app/logs
     restart: unless-stopped
 
 volumes:
   postgres_data:
   pgadmin_data:
+  logs:

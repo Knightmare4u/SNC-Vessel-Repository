@@ -87,6 +87,22 @@ mv "$TMP_FILE" "$BACKUP_FILE"
 size=$(du -h "$BACKUP_FILE" | cut -f1)
 log "SUCCESS - backup created: $BACKUP_FILE ($size)"
 
+# Uploaded files (signing copies, signed PDFs, signature images). The database
+# points at these files, so they are backed up together and restored together.
+# Done after the dump, so every file the dump refers to is in the archive.
+MEDIA_FILE="$BACKUP_DIR/media_${TIMESTAMP}.tar.gz"
+if [ ! -d media ]; then
+    log "SKIPPED - no media folder to back up"
+else
+    TMP_FILE="$MEDIA_FILE.tmp"
+    if ! tar -czf "$TMP_FILE" media; then
+        fail "media archive failed"
+    fi
+    mv "$TMP_FILE" "$MEDIA_FILE"
+    size=$(du -h "$MEDIA_FILE" | cut -f1)
+    log "SUCCESS - media backup created: $MEDIA_FILE ($size)"
+fi
+
 # Runs only after a verified backup, so a failing job never prunes old backups
 prune_backups() {
     local f name stamp ts age week month keep
@@ -122,7 +138,8 @@ prune_backups() {
         fi
 
         if [ "$keep" = false ]; then
-            rm -f -- "$f"
+            # The media archive from the same run goes with its dump
+            rm -f -- "$f" "$BACKUP_DIR/media_${name:3:15}.tar.gz"
             log "PRUNED - $f"
         fi
     done

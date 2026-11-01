@@ -1,0 +1,6 @@
+{# Progress heading and bar for the sign and progress pages; pass signed and total #}
+<div class="sg-section-head">
+    <span class="sg-label">Progress</span>
+    <span class="sg-muted">{{ signed }} of {{ total }} signed</span>
+</div>
+<div class="sg-progress"><div style="width: {% widthratio signed total 100 %}%;"></div></div>

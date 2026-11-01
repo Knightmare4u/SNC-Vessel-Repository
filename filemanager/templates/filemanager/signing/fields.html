@@ -1,0 +1,244 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Place Signatures - SNSeaFiles{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'filemanager/css/signing.css' %}">
+{% endblock %}
+
+{% block content %}
+<div class="sg-place">
+    <aside class="card sg-place-side">
+        <h2>Place signatures</h2>
+        <p class="sg-muted">{{ signing_request.filename }}</p>
+        <p class="sg-mt">Drag each box to where that person signs; drag the corner to resize. A date box is optional.</p>
+
+        {% for error in form.non_field_errors %}<div class="alert alert-error sg-mt">{{ error }}</div>{% endfor %}
+        {% for error in form.boxes.errors %}<div class="alert alert-error sg-mt">{{ error }}</div>{% endfor %}
+
+        <hr class="sg-hr">
+        <div class="sg-section-head"><span class="sg-label">Recipients</span></div>
+        {# Filled by the script below from signers_data #}
+        <div id="signer-list"></div>
+
+        <form method="post" id="fields-form">
+            {% csrf_token %}
+            {{ form.boxes }}
+        </form>
+        <form method="post" action="{% url 'signing_delete' signing_request.pk %}" id="delete-form">
+            {% csrf_token %}
+        </form>
+        <div class="sg-nav">
+            <button type="submit" form="fields-form" class="btn btn-primary sg-btn-block">Send for signing</button>
+            <button type="submit" form="delete-form" class="btn btn-outline sg-btn-block">Delete draft</button>
+        </div>
+    </aside>
+
+    <div class="sg-place-pages" id="pdf-pages">
+        <p class="sg-muted" data-pdf-loading>Loading document…</p>
+    </div>
+</div>
+
+{{ signers_data|json_script:"signers-data" }}
+{{ boxes_data|json_script:"boxes-data" }}
+{% endblock %}
+
+{% block extra_js %}
+<script type="module">
+import * as pdfjsLib from "{% static 'filemanager/vendor/pdfjs/pdf.min.mjs' %}";
+import { renderPdfPages } from "{% static 'filemanager/js/pdf_pages.js' %}";
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = "{% static 'filemanager/vendor/pdfjs/pdf.worker.min.mjs' %}";
+
+const PDF_URL = "{% url 'signing_pdf' signing_request.pk %}";
+const COLORS = ['#2563eb', '#7c4fe0', '#15936f', '#d97706', '#db2777', '#0891b2'];
+// Default box sizes as a share of the page
+const SIZES = { signature: { width: 0.28, height: 0.07 }, date: { width: 0.16, height: 0.04 } };
+const LABELS = { signature: 'Signature', date: 'Date' };
+const ICONS = { signature: '✍', date: '📅' };
+
+const signers = JSON.parse(document.getElementById('signers-data').textContent);
+const initialBoxes = JSON.parse(document.getElementById('boxes-data').textContent);
+const pagesEl = document.getElementById('pdf-pages');
+const listEl = document.getElementById('signer-list');
+let pageEls = [];
+
+const colorOf = (signerId) => COLORS[signers.findIndex((s) => s.id === signerId) % COLORS.length];
+const findBox = (signerId, type) =>
+    pagesEl.querySelector(`[data-box][data-signer="${signerId}"][data-type="${type}"]`);
+
+// ---- Boxes: position and size are % of the page, so they follow any zoom ---
+function setBox(box, page, x, y, width, height) {
+    if (box.parentElement !== pageEls[page - 1]) pageEls[page - 1].appendChild(box);
+    Object.assign(box.dataset, { x, y, width, height });
+    box.style.left = `${x * 100}%`;
+    box.style.top = `${y * 100}%`;
+    box.style.width = `${width * 100}%`;
+    box.style.height = `${height * 100}%`;
+}
+
+function addBox(signerId, type, place) {
+    const signer = signers.find((s) => s.id === signerId);
+    const box = document.createElement('div');
+    box.className = 'sg-box';
+    box.dataset.box = '';
+    box.dataset.signer = signerId;
+    box.dataset.type = type;
+    box.style.setProperty('--box-color', colorOf(signerId));
+    box.innerHTML = `<span class="sg-box-label"><b></b><small></small></span>
+        <button type="button" class="sg-box-remove" data-remove-box title="Remove" aria-label="Remove box">×</button>
+        <span class="sg-box-resize" data-resize title="Resize"></span>`;
+    box.querySelector('.sg-box-label b').textContent = `${ICONS[type]} ${LABELS[type]}`;
+    box.querySelector('.sg-box-label small').textContent = signer.name;
+    setBox(box, place.page, place.x, place.y, place.width, place.height);
+    return box;
+}
+
+// New boxes go in the middle of the page currently in view
+function placeInView(type) {
+    const middle = window.innerHeight / 2;
+    const pageEl = pageEls.find((el) => el.getBoundingClientRect().bottom > middle) || pageEls[0];
+    const { width, height } = SIZES[type];
+    return { page: Number(pageEl.dataset.page), x: (1 - width) / 2, y: (1 - height) / 2, width, height };
+}
+
+// ---- Sidebar ---------------------------------------------------------------
+// The recipient card last clicked is highlighted
+let selectedId = null;
+
+function renderSidebar() {
+    listEl.innerHTML = '';
+    signers.forEach((signer) => {
+        const row = document.createElement('div');
+        row.className = 'sg-place-signer';
+        row.classList.toggle('sg-place-on', signer.id === selectedId);
+        row.dataset.signer = signer.id;
+        row.style.setProperty('--box-color', colorOf(signer.id));
+        row.innerHTML = `<div class="sg-place-head">
+                <span class="sg-place-order"></span><span class="sg-place-dot"></span><span class="sg-place-name"></span>
+            </div>
+            <div class="sg-place-actions"></div>`;
+        row.querySelector('.sg-place-order').textContent = signer.order;
+        row.querySelector('.sg-place-name').textContent = signer.name;
+        const actions = row.querySelector('.sg-place-actions');
+        ['signature', 'date'].forEach((type) => {
+            const box = findBox(signer.id, type);
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'btn btn-outline btn-sm';
+            button.dataset.type = type;
+            button.textContent = box
+                ? `${ICONS[type]} ${LABELS[type]}: page ${box.parentElement.dataset.page} ↗`
+                : `${ICONS[type]} ${LABELS[type]}`;
+            actions.appendChild(button);
+        });
+        listEl.appendChild(row);
+    });
+}
+
+listEl.addEventListener('click', (event) => {
+    const row = event.target.closest('.sg-place-signer');
+    if (!row) return;
+    selectedId = Number(row.dataset.signer);
+    const button = event.target.closest('button[data-type]');
+    if (button) {
+        const type = button.dataset.type;
+        const box = findBox(selectedId, type) || addBox(selectedId, type, placeInView(type));
+        box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        box.classList.add('sg-box-flash');
+        setTimeout(() => box.classList.remove('sg-box-flash'), 800);
+    }
+    renderSidebar();
+});
+
+pagesEl.addEventListener('click', (event) => {
+    const remove = event.target.closest('[data-remove-box]');
+    if (!remove) return;
+    remove.closest('[data-box]').remove();
+    renderSidebar();
+});
+
+// ---- Drag and resize (pointer events: mouse, touch, stylus) -----------------
+let action = null;
+
+pagesEl.addEventListener('pointerdown', (event) => {
+    const box = event.target.closest('[data-box]');
+    if (!box || event.target.closest('[data-remove-box]')) return;
+    event.preventDefault();
+    const rect = box.getBoundingClientRect();
+    action = {
+        box,
+        resize: Boolean(event.target.closest('[data-resize]')),
+        // Where in the box it was grabbed, so it doesn't jump to the pointer
+        offsetX: event.clientX - rect.left,
+        offsetY: event.clientY - rect.top,
+    };
+    box.classList.add('sg-box-active');
+});
+
+document.addEventListener('pointermove', (event) => {
+    if (!action) return;
+    const { box } = action;
+    const d = box.dataset;
+    if (action.resize) {
+        const rect = box.parentElement.getBoundingClientRect();
+        const width = Math.min(Math.max((event.clientX - rect.left) / rect.width - Number(d.x), 0.05), 1 - Number(d.x));
+        const height = Math.min(Math.max((event.clientY - rect.top) / rect.height - Number(d.y), 0.02), 1 - Number(d.y));
+        setBox(box, Number(box.parentElement.dataset.page), Number(d.x), Number(d.y), width, height);
+        return;
+    }
+    // Moving: the box can be dropped on whichever page is under the pointer
+    const pageEl = pageEls.find((el) => {
+        const r = el.getBoundingClientRect();
+        return event.clientY >= r.top && event.clientY <= r.bottom;
+    }) || box.parentElement;
+    const rect = pageEl.getBoundingClientRect();
+    const width = Number(d.width);
+    const height = Number(d.height);
+    const x = Math.min(Math.max((event.clientX - action.offsetX - rect.left) / rect.width, 0), 1 - width);
+    const y = Math.min(Math.max((event.clientY - action.offsetY - rect.top) / rect.height, 0), 1 - height);
+    setBox(box, Number(pageEl.dataset.page), x, y, width, height);
+});
+
+function endAction() {
+    if (!action) return;
+    action.box.classList.remove('sg-box-active');
+    action = null;
+    renderSidebar();
+}
+document.addEventListener('pointerup', endAction);
+document.addEventListener('pointercancel', endAction);
+
+// ---- Submit ------------------------------------------------------------------
+document.getElementById('fields-form').addEventListener('submit', (event) => {
+    const missing = signers.filter((s) => !findBox(s.id, 'signature'));
+    if (missing.length) {
+        event.preventDefault();
+        alert(`Place a signature box for: ${missing.map((s) => s.name).join(', ')}`);
+        return;
+    }
+    const boxes = [...pagesEl.querySelectorAll('[data-box]')].map((box) => ({
+        signer: Number(box.dataset.signer),
+        field_type: box.dataset.type,
+        page: Number(box.parentElement.dataset.page),
+        x: Number(box.dataset.x),
+        y: Number(box.dataset.y),
+        width: Number(box.dataset.width),
+        height: Number(box.dataset.height),
+    }));
+    document.getElementById('id_boxes').value = JSON.stringify(boxes);
+});
+
+document.getElementById('delete-form').addEventListener('submit', (event) => {
+    if (!confirm('Delete this draft? Nothing has been sent yet.')) event.preventDefault();
+});
+
+// ---- Start ---------------------------------------------------------------------
+pageEls = await renderPdfPages(pdfjsLib, pagesEl, PDF_URL);
+initialBoxes.forEach((b) => {
+    if (b.page <= pageEls.length) addBox(b.signer, b.field_type, b);
+});
+renderSidebar();
+</script>
+{% endblock %}

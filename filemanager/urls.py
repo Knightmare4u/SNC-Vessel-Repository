@@ -4,13 +4,13 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
+    path('', views.LoginView.as_view(), name='login'),
+    path('auth/microsoft/login/', views.microsoft_login, name='microsoft_login'),
+    # The redirect URI on the Entra ID app registration
     path(
-        '',
-        auth_views.LoginView.as_view(
-            template_name='filemanager/login.html',
-            redirect_authenticated_user=True,
-        ),
-        name='login',
+        'auth/microsoft/callback/',
+        views.microsoft_callback,
+        name='microsoft_callback',
     ),
     path(
         'logout/',
@@ -21,9 +21,22 @@ urlpatterns = [
     path('dashboard/', views.dashboard, name='dashboard'),
     path('browser/', views.file_browser, name='file_browser'),
     path('browser/<path:folder_path>/', views.file_browser, name='file_browser'),
-    path('download/<path:file_path>/', views.download_file, name='download_file'),
+    path('files/<uuid:file_uuid>/download/', views.download_file, name='download_file'),
+    path('files/<uuid:file_uuid>/preview/', views.file_preview, name='file_preview'),
+    # Links copied before files had a uuid
+    path(
+        'download/<path:file_path>/',
+        views.file_by_path,
+        {'view_name': 'download_file'},
+        name='download_file_by_path',
+    ),
+    path(
+        'preview/<path:file_path>/',
+        views.file_by_path,
+        {'view_name': 'file_preview'},
+        name='file_preview_by_path',
+    ),
     path('bulk-download/', views.bulk_download, name='bulk_download'),
-    path('preview/<path:file_path>/', views.file_preview, name='file_preview'),
     path('upload/', views.upload_file, name='upload_file'),
     path(
         'upload/progress/<str:session_id>/',
@@ -34,5 +47,12 @@ urlpatterns = [
     path('delete/', views.delete_file, name='delete_file'),
     path('search/', views.search_files, name='search_files'),
     path('create-folder/', views.create_folder, name='create_folder'),
+    path('signing/', views.signing_list, name='signing_list'),
+    path('signing/new/', views.signing_create, name='signing_create'),
+    path('signing/<int:pk>/', views.signing_detail, name='signing_detail'),
+    path('signing/<int:pk>/fields/', views.signing_fields, name='signing_fields'),
+    path('signing/<int:pk>/delete/', views.signing_delete, name='signing_delete'),
+    path('signing/<int:pk>/sign/', views.signing_sign, name='signing_sign'),
+    path('signing/<int:pk>/pdf/', views.signing_pdf, name='signing_pdf'),
     path('health/', views.health, name='health'),
 ]
