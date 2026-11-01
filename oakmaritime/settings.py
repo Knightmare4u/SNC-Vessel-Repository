@@ -187,6 +187,15 @@ STORAGES = {
     },
 }
 
+# Django errors (mainly unhandled 500s) are emailed to ADMINS when DEBUG is False
+ADMINS = [
+    ('DevOps', 'devops@sinceregp.com'),
+    ('Eduardo Bertrand', 'Eduardo.Bertrand@sinceregp.com'),
+    ('Grace Pan', 'grace.pan@sinceregp.com'),
+]
+SERVER_EMAIL = DEFAULT_FROM_EMAIL
+EMAIL_SUBJECT_PREFIX = '[SNSeaFiles] '
+
 LOG_DIR = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
 
@@ -195,6 +204,9 @@ LOGGING = {
     'disable_existing_loggers': False,
     'filters': {
         'request_id': {'()': 'filemanager.request_id.RequestIDFilter'},
+        'require_debug_false': {
+            '()': 'django.utils.log.RequireDebugFalse',
+        },
     },
     'formatters': {
         'verbose': {
@@ -217,6 +229,15 @@ LOGGING = {
             'formatter': 'verbose',
             'filters': ['request_id'],
         },
+        'mail_admins': {
+            'class': 'django.utils.log.AdminEmailHandler',
+            'level': 'ERROR',
+            'filters': ['require_debug_false'],
+        },
+        # Drops "Invalid HTTP_HOST header" errors from scanners
+        'null': {
+            'class': 'logging.NullHandler',
+        },
     },
     'root': {
         'handlers': ['console', 'file'],
@@ -224,8 +245,12 @@ LOGGING = {
     },
     'loggers': {
         'django': {
-            'handlers': ['console', 'file'],
+            'handlers': ['console', 'file', 'mail_admins'],
             'level': config('DJANGO_LOG_LEVEL', default='INFO'),
+            'propagate': False,
+        },
+        'django.security.DisallowedHost': {
+            'handlers': ['null'],
             'propagate': False,
         },
     },

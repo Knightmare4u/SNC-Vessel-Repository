@@ -23,7 +23,7 @@ from django.core.exceptions import (
     ValidationError,
 )
 from django.core.paginator import Paginator
-from django.db import transaction
+from django.db import DatabaseError, connection, transaction
 from django.db.models import Count, Q
 from django.http import (
     FileResponse,
@@ -41,7 +41,8 @@ from django.utils.http import (
     url_has_allowed_host_and_scheme,
 )
 from django.utils.text import get_valid_filename
-from django.views.decorators.http import require_POST
+from django.views.decorators.cache import never_cache
+from django.views.decorators.http import require_POST, require_safe
 from xlrd.xldate import xldate_as_datetime
 
 from .forms import SignerFormSet, SignForm, SigningCreateForm, SigningFieldsForm
@@ -1335,3 +1336,19 @@ def signing_pdf(request, pk):
         content_type='application/pdf',
         filename=signing_request.filename,
     )
+
+
+@never_cache
+@require_safe
+def health(request):
+    """For the uptime monitor: 200 when the database answers, 503 when it does not."""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT 1')
+    except DatabaseError:
+        # 503 instead of a 500, so an outage does not email ADMINS on every poll
+        logger.exception('Health check could not reach the database')
+        return HttpResponse(
+            'database unavailable', status=503, content_type='text/plain'
+        )
+    return HttpResponse('ok', content_type='text/plain')

@@ -54,4 +54,5 @@ urlpatterns = [
     path('signing/<int:pk>/delete/', views.signing_delete, name='signing_delete'),
     path('signing/<int:pk>/sign/', views.signing_sign, name='signing_sign'),
     path('signing/<int:pk>/pdf/', views.signing_pdf, name='signing_pdf'),
+    path('health/', views.health, name='health'),
 ]
