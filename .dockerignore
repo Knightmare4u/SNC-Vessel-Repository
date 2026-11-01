@@ -24,7 +24,7 @@ imports/
 
 # Environment / secrets
 .env
-.env.example
+.env.*
 
 # Logs
 *.log
