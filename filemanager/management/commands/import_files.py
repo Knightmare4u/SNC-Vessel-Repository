@@ -11,8 +11,9 @@ from filemanager.models import File, Folder, FolderPermission
 from filemanager.services import filesystem
 from filemanager.utils import normalize_path
 
-# Top-level folders that are not imported: the old archive, and new uploads
-SKIPPED_FOLDERS = {'ARCHIVE', 'objects'}
+# Top-level folders that are not imported: the old archive, new uploads, and
+# a second copy of 'home'
+SKIPPED_FOLDERS = {'ARCHIVE', 'objects', 'homes'}
 BATCH_SIZE = 1000
 MAX_PATH = File._meta.get_field('file').max_length
 
