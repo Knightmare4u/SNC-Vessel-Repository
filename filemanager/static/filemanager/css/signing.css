@@ -39,6 +39,13 @@
     margin-top: 1rem;
 }
 
+/* Buttons kept side by side on the right of .sg-nav */
+.sg-nav-group {
+    display: flex;
+    gap: 0.5rem;
+    margin-left: auto;
+}
+
 .sg-error {
     color: var(--error-red);
     font-size: 0.875rem;
@@ -846,5 +853,20 @@
     .sg-table td {
         padding-left: 0.5rem;
         padding-right: 0.5rem;
+    }
+
+    /* Phones: one full-width button per row instead of squeezed side by side */
+    .sg-nav-stack,
+    .sg-nav-stack .sg-nav-group {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .sg-nav-stack .sg-nav-group {
+        margin-left: 0;
+    }
+
+    .sg-nav-stack .btn {
+        justify-content: center;
     }
 }

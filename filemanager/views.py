@@ -1309,6 +1309,15 @@ def signing_detail(request, pk):
     completed = signing_request.activities.filter(
         action=SigningActivity.Action.COMPLETED
     ).first()
+    # Signers and notified users may have no access to the file's folder
+    folder = to_url_path(filesystem.get_path(signing_request.file.folder))
+    folder_url = None
+    if has_permission(request.user, folder, 'read'):
+        folder_url = (
+            reverse('file_browser', args=[folder])
+            if folder
+            else reverse('file_browser')
+        )
 
     return render(
         request,
@@ -1322,6 +1331,7 @@ def signing_detail(request, pk):
                 for s in signers
             ),
             'written_back': completed.detail.get('written_back') if completed else None,
+            'folder_url': folder_url,
         },
     )
 

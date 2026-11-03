@@ -42,13 +42,18 @@
             </tbody>
         </table>
 
-        <div class="sg-nav sg-mt-lg">
-            <a class="btn btn-secondary" href="{% url 'signing_pdf' signing_request.pk %}" target="_blank" rel="noopener">View PDF</a>
-            {% if signing_request.status == 'draft' %}
-                <a class="btn btn-primary" href="{% url 'signing_fields' signing_request.pk %}">Continue</a>
-            {% elif my_turn %}
-                <a class="btn btn-primary" href="{% url 'signing_sign' signing_request.pk %}">✍ Sign now</a>
+        <div class="sg-nav sg-nav-stack sg-mt-lg">
+            {% if folder_url %}
+                <a class="btn btn-outline" href="{{ folder_url }}">← Open folder</a>
             {% endif %}
+            <div class="sg-nav-group">
+                <a class="btn btn-secondary" href="{% url 'signing_pdf' signing_request.pk %}" target="_blank" rel="noopener">View PDF</a>
+                {% if signing_request.status == 'draft' %}
+                    <a class="btn btn-primary" href="{% url 'signing_fields' signing_request.pk %}">Continue</a>
+                {% elif my_turn %}
+                    <a class="btn btn-primary" href="{% url 'signing_sign' signing_request.pk %}">✍ Sign now</a>
+                {% endif %}
+            </div>
         </div>
     </div>
 </div>
