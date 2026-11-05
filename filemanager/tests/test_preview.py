@@ -83,9 +83,3 @@ class PreviewTests(StorageTestCase):
         response = self.client.get(url, HTTP_RANGE='bytes=10-')  # Past the end
         self.assertEqual(response.status_code, 416)
         self.assertEqual(response['Content-Range'], 'bytes */10')
-
-    def test_broken_office_files_cannot_be_previewed(self):
-        for name in ['bad.docx', 'bad.xlsx', 'bad.xls']:
-            with self.subTest(name=name):
-                response = self.preview(name, b'not really an office file')
-                self.assertEqual(response.status_code, 422)

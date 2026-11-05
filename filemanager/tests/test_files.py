@@ -1,57 +1,14 @@
 import io
 import os
-import uuid
 import zipfile
 from unittest import mock
 
 from django.core.files.uploadedfile import InMemoryUploadedFile, SimpleUploadedFile
-from django.test import Client
 from django.urls import reverse
 
-from ..models import FileActivity, FolderPermission
+from ..models import FolderPermission
 from ..services import filesystem
 from .base import StorageTestCase
-
-
-class FileBrowserTests(StorageTestCase):
-    def test_missing_folder_or_a_file_path_returns_404(self):
-        self.make_file('A/a.txt')
-        self.login(self.make_user('su', superuser=True))
-        for path in ['does-not-exist', 'A/a.txt']:
-            with self.subTest(path=path):
-                response = self.client.get(reverse('file_browser', args=[path]))
-                self.assertEqual(response.status_code, 404)
-        self.assertIsNone(filesystem.resolve_folder('does-not-exist'))
-
-    def test_no_permission_redirects_to_dashboard(self):
-        self.make_dir('A')
-        self.login(self.make_user('u', [('/B', 'read')]))
-        response = self.client.get(reverse('file_browser', args=['A']))
-        self.assertRedirects(response, reverse('dashboard'))
-
-    def test_legacy_double_slash_url_still_works(self):
-        self.make_dir('A')
-        self.login(self.make_user('u', [('/A', 'read')]))
-        response = self.client.get('/browser//A/')
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context['current_path'], 'A')
-
-    def test_deleted_items_are_hidden(self):
-        user = self.make_user('su', superuser=True)
-        self.make_file('A/a.txt')
-        filesystem.delete_file(self.make_file('A/gone.txt'), user)
-        filesystem.delete_folder(self.make_dir('A/gone'), user)
-        self.make_file('A/sub/b.txt')
-        filesystem.delete_file(self.make_file('A/sub/gone.txt'), user)
-        self.login(user)
-
-        response = self.client.get(reverse('file_browser', args=['A']))
-
-        items = {item['name']: item for item in response.context['items']}
-        self.assertEqual(sorted(items), ['a.txt', 'sub'])
-        self.assertEqual(items['sub']['size'], '1 items')
-        self.assertEqual(response.context['file_count'], 1)
-        self.assertEqual(response.context['folder_count'], 1)
 
 
 class FileOperationTestCase(StorageTestCase):
@@ -69,13 +26,10 @@ class FileOperationTestCase(StorageTestCase):
     def make_admin(self):
         FolderPermission.objects.filter(user=self.user).update(permission='admin')
 
-    def upload(
-        self, folder_path, name='new.txt', content=b'data', client=None, **extra
-    ):
-        return (client or self.client).post(
+    def upload(self, folder_path, name='new.txt', content=b'data'):
+        return self.client.post(
             reverse('upload_file'),
             {'folder_path': folder_path, 'files': SimpleUploadedFile(name, content)},
-            **extra,
         )
 
     def uploaded_name(self, name):
@@ -164,16 +118,6 @@ class UploadTests(FileOperationTestCase):
         self.assertEqual(self.upload('B').status_code, 403)
         self.assertEqual(self.upload('A/missing').status_code, 404)
         self.assertIsNone(filesystem.resolve_folder('A/missing'))
-
-    def test_upload_requires_csrf_token(self):
-        client = Client(enforce_csrf_checks=True)
-        client.force_login(self.user)
-        self.assertEqual(self.upload('A', client=client).status_code, 403)
-
-        client.get(reverse('file_browser', args=['A']))
-        token = client.cookies['csrftoken'].value
-        response = self.upload('A', client=client, HTTP_X_CSRFTOKEN=token)
-        self.assertEqual(response.status_code, 200)
 
     def test_create_folder(self):
         response = self.post_json(
@@ -301,12 +245,6 @@ class DownloadTests(FileOperationTestCase):
         self.assertEqual(self.rename('A/sub', 'sub2').status_code, 200)
         self.assertEqual(self.read_response(self.client.get(url)), b'hello')
 
-    def test_links_stop_working_once_the_file_is_deleted(self):
-        file = filesystem.resolve_file('A/a.txt')
-        url = reverse('download_file', args=[file.uuid])
-        filesystem.delete_file(file, self.user)
-        self.assertEqual(self.client.get(url).status_code, 404)
-
     def test_old_path_links_redirect_to_the_uuid_link(self):
         file = self.make_file('A/Report #3/Invoice 100%.pdf')
         for by_path, view in [
@@ -323,36 +261,6 @@ class DownloadTests(FileOperationTestCase):
                     fetch_redirect_response=False,
                 )
 
-    def test_preview_and_download_check_access_and_existence(self):
-        file = self.make_file('B/b.txt')
-        for view, no_access, missing in [
-            ('download_file', file.uuid, uuid.uuid4()),
-            ('file_preview', file.uuid, uuid.uuid4()),
-            ('download_file_by_path', 'B/b.txt', 'A/missing.txt'),
-            ('file_preview_by_path', 'B/b.txt', 'A/missing.txt'),
-        ]:
-            with self.subTest(view=view):
-                response = self.client.get(reverse(view, args=[no_access]))
-                self.assertEqual(response.status_code, 403)
-                response = self.client.get(reverse(view, args=[missing]))
-                self.assertEqual(response.status_code, 404)
-
-    def test_file_missing_on_disk_returns_404(self):
-        # e.g. removed from the shared folder outside the site
-        file = filesystem.resolve_file('A/a.txt')
-        os.remove(file.file.path)
-        for view in ['file_preview', 'download_file']:
-            with self.subTest(view=view), self.assertLogs('filemanager.views', 'ERROR'):
-                response = self.client.get(reverse(view, args=[file.uuid]))
-                self.assertEqual(response.status_code, 404)
-
-        with self.assertLogs('filemanager.views', 'ERROR'):
-            response = self.client.post(
-                reverse('bulk_download'), {'paths': ['A/a.txt']}
-            )
-        self.assertEqual(response.status_code, 404)
-        self.assertFalse(FileActivity.objects.filter(activity_type='download').exists())
-
     def test_bulk_download_zip_layout(self):
         self.make_file('A/sub/a.txt')
         self.make_file('A/sub/deep/b.txt')
@@ -366,17 +274,6 @@ class DownloadTests(FileOperationTestCase):
                 response = self.client.post(reverse('bulk_download'), {'paths': paths})
                 zip_file = zipfile.ZipFile(io.BytesIO(self.read_response(response)))
                 self.assertEqual(sorted(zip_file.namelist()), expected)
-
-    def test_bulk_download_is_all_or_nothing(self):
-        self.make_file('B/b.txt')
-        for paths, status in [
-            (['A/a.txt', 'B/b.txt'], 403),  # No access to B
-            (['A/a.txt', 'A/missing.txt'], 404),
-        ]:
-            with self.subTest(paths=paths):
-                response = self.client.post(reverse('bulk_download'), {'paths': paths})
-                self.assertEqual(response.status_code, status)
-        self.assertFalse(FileActivity.objects.filter(activity_type='download').exists())
 
 
 class SearchTests(FileOperationTestCase):

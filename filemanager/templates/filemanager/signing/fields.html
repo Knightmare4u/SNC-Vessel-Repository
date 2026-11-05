@@ -12,7 +12,7 @@
     <aside class="card sg-place-side">
         <h2>Place signatures</h2>
         <p class="sg-muted">{{ signing_request.filename }}</p>
-        <p class="sg-mt">Drag each box to where that person signs; drag the corner to resize. A date box is optional.</p>
+        <p class="sg-mt">Drag each box to where that person signs; drag the corner to resize. Date and comment boxes are optional.</p>
 
         {% for error in form.non_field_errors %}<div class="alert alert-error sg-mt">{{ error }}</div>{% endfor %}
         {% for error in form.boxes.errors %}<div class="alert alert-error sg-mt">{{ error }}</div>{% endfor %}
@@ -21,6 +21,17 @@
         <div class="sg-section-head"><span class="sg-label">Recipients</span></div>
         {# Filled by the script below from signers_data #}
         <div id="signer-list"></div>
+
+        {# Shown by the script with the recipients #}
+        <div id="shared-section" hidden>
+            <hr class="sg-hr">
+            <div class="sg-section-head"><span class="sg-label">For everyone</span></div>
+            <div class="sg-place-signer" id="shared-card">
+                <div class="sg-place-head"><span class="sg-place-dot"></span><span class="sg-place-name">Shared comments</span></div>
+                <div class="sg-place-actions"><button type="button" class="btn btn-outline btn-sm"></button></div>
+                <div class="sg-place-route">One box for everyone's comments, instead of a 💬 Comment box each</div>
+            </div>
+        </div>
 
         <form method="post" id="fields-form">
             {% csrf_token %}
@@ -46,27 +57,40 @@
 
 {% block extra_js %}
 <script type="module">
-import * as pdfjsLib from "{% static 'filemanager/vendor/pdfjs/pdf.min.mjs' %}";
 import { renderPdfPages } from "{% static 'filemanager/js/pdf_pages.js' %}";
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = "{% static 'filemanager/vendor/pdfjs/pdf.worker.min.mjs' %}";
 
 const PDF_URL = "{% url 'signing_pdf' signing_request.pk %}";
 const COLORS = ['#2563eb', '#7c4fe0', '#15936f', '#d97706', '#db2777', '#0891b2'];
+// The shared comment box belongs to no signer: its own type and a neutral colour
+const SHARED = 'shared_comment';
+const SHARED_COLOR = '#475569';
 // Default box sizes as a share of the page
-const SIZES = { signature: { width: 0.28, height: 0.07 }, date: { width: 0.16, height: 0.04 } };
-const LABELS = { signature: 'Signature', date: 'Date' };
-const ICONS = { signature: '✍', date: '📅' };
+const SIZES = {
+    signature: { width: 0.28, height: 0.07 },
+    date: { width: 0.16, height: 0.04 },
+    comment: { width: 0.4, height: 0.08 },
+    [SHARED]: { width: 0.8, height: 0.2 },
+};
+// Names on the boxes; the shared one's button says "Shared box"
+const LABELS = { signature: 'Signature', date: 'Date', comment: 'Comment', [SHARED]: 'Shared comments' };
+const BUTTON_LABELS = { ...LABELS, [SHARED]: 'Shared box' };
+const ICONS = { signature: '✍', date: '📅', comment: '💬', [SHARED]: '💬' };
 
 const signers = JSON.parse(document.getElementById('signers-data').textContent);
 const initialBoxes = JSON.parse(document.getElementById('boxes-data').textContent);
 const pagesEl = document.getElementById('pdf-pages');
 const listEl = document.getElementById('signer-list');
+const sharedEl = document.getElementById('shared-card');
+sharedEl.style.setProperty('--box-color', SHARED_COLOR);
 let pageEls = [];
 
 const colorOf = (signerId) => COLORS[signers.findIndex((s) => s.id === signerId) % COLORS.length];
-const findBox = (signerId, type) =>
-    pagesEl.querySelector(`[data-box][data-signer="${signerId}"][data-type="${type}"]`);
+const findBox = (signerId, type) => pagesEl.querySelector(type === SHARED
+    ? `[data-box][data-type="${SHARED}"]`
+    : `[data-box][data-signer="${signerId}"][data-type="${type}"]`);
+// "✍ Signature", or "✍ Signature: page 2 ↗" once the box is placed
+const buttonText = (type, box) =>
+    `${ICONS[type]} ${BUTTON_LABELS[type]}${box ? `: page ${box.parentElement.dataset.page} ↗` : ''}`;
 
 // ---- Boxes: position and size are % of the page, so they follow any zoom ---
 function setBox(box, page, x, y, width, height) {
@@ -79,18 +103,22 @@ function setBox(box, page, x, y, width, height) {
 }
 
 function addBox(signerId, type, place) {
-    const signer = signers.find((s) => s.id === signerId);
     const box = document.createElement('div');
     box.className = 'sg-box';
     box.dataset.box = '';
-    box.dataset.signer = signerId;
     box.dataset.type = type;
-    box.style.setProperty('--box-color', colorOf(signerId));
+    box.style.setProperty('--box-color', type === SHARED ? SHARED_COLOR : colorOf(signerId));
     box.innerHTML = `<span class="sg-box-label"><b></b><small></small></span>
         <button type="button" class="sg-box-remove" data-remove-box title="Remove" aria-label="Remove box">×</button>
         <span class="sg-box-resize" data-resize title="Resize"></span>`;
     box.querySelector('.sg-box-label b').textContent = `${ICONS[type]} ${LABELS[type]}`;
-    box.querySelector('.sg-box-label small').textContent = signer.name;
+    // Who writes in it: its signer, or everyone for the shared box
+    if (type === SHARED) {
+        box.querySelector('.sg-box-label small').textContent = signers.map((s) => s.name).join(', ');
+    } else {
+        box.dataset.signer = signerId;
+        box.querySelector('.sg-box-label small').textContent = signers.find((s) => s.id === signerId).name;
+    }
     setBox(box, place.page, place.x, place.y, place.width, place.height);
     return box;
 }
@@ -104,10 +132,14 @@ function placeInView(type) {
 }
 
 // ---- Sidebar ---------------------------------------------------------------
-// The recipient card last clicked is highlighted
+// The card last clicked is highlighted: a signer's id, or SHARED
 let selectedId = null;
 
 function renderSidebar() {
+    const shared = findBox(null, SHARED);
+    // Comments go either in a box for each person or all in the shared box, so
+    // once one kind is placed the other cannot be added
+    const ownComment = pagesEl.querySelector('[data-box][data-type="comment"]');
     listEl.innerHTML = '';
     signers.forEach((signer) => {
         const row = document.createElement('div');
@@ -122,32 +154,54 @@ function renderSidebar() {
         row.querySelector('.sg-place-order').textContent = signer.order;
         row.querySelector('.sg-place-name').textContent = signer.name;
         const actions = row.querySelector('.sg-place-actions');
-        ['signature', 'date'].forEach((type) => {
-            const box = findBox(signer.id, type);
+        ['signature', 'date', 'comment'].forEach((type) => {
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'btn btn-outline btn-sm';
             button.dataset.type = type;
-            button.textContent = box
-                ? `${ICONS[type]} ${LABELS[type]}: page ${box.parentElement.dataset.page} ↗`
-                : `${ICONS[type]} ${LABELS[type]}`;
+            const box = findBox(signer.id, type);
+            button.textContent = buttonText(type, box);
+            if (type === 'comment' && shared && !box) {
+                button.disabled = true;
+                button.title = 'Remove the shared comments box to use this';
+            }
             actions.appendChild(button);
         });
         listEl.appendChild(row);
     });
+
+    document.getElementById('shared-section').hidden = false;
+    sharedEl.classList.toggle('sg-place-on', selectedId === SHARED);
+    const sharedButton = sharedEl.querySelector('button');
+    sharedButton.textContent = buttonText(SHARED, shared);
+    sharedButton.disabled = Boolean(ownComment && !shared);
+    sharedButton.title = sharedButton.disabled ? 'Remove the 💬 Comment boxes to use this' : '';
 }
 
+function showBox(box) {
+    box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    box.classList.add('sg-box-flash');
+    setTimeout(() => box.classList.remove('sg-box-flash'), 800);
+}
+
+// The sidebar shows before the PDF is laid out; boxes need its pages
 listEl.addEventListener('click', (event) => {
     const row = event.target.closest('.sg-place-signer');
-    if (!row) return;
+    if (!row || !pageEls.length) return;
     selectedId = Number(row.dataset.signer);
     const button = event.target.closest('button[data-type]');
-    if (button) {
+    if (button && !button.disabled) {
         const type = button.dataset.type;
-        const box = findBox(selectedId, type) || addBox(selectedId, type, placeInView(type));
-        box.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        box.classList.add('sg-box-flash');
-        setTimeout(() => box.classList.remove('sg-box-flash'), 800);
+        showBox(findBox(selectedId, type) || addBox(selectedId, type, placeInView(type)));
+    }
+    renderSidebar();
+});
+
+sharedEl.addEventListener('click', (event) => {
+    if (!pageEls.length) return;
+    selectedId = SHARED;
+    if (event.target.closest('button:enabled')) {
+        showBox(findBox(null, SHARED) || addBox(null, SHARED, placeInView(SHARED)));
     }
     renderSidebar();
 });
@@ -219,7 +273,8 @@ document.getElementById('fields-form').addEventListener('submit', (event) => {
         return;
     }
     const boxes = [...pagesEl.querySelectorAll('[data-box]')].map((box) => ({
-        signer: Number(box.dataset.signer),
+        // The shared comment box belongs to no signer
+        signer: box.dataset.type === SHARED ? null : Number(box.dataset.signer),
         field_type: box.dataset.type,
         page: Number(box.parentElement.dataset.page),
         x: Number(box.dataset.x),
@@ -235,6 +290,12 @@ document.getElementById('delete-form').addEventListener('submit', (event) => {
 });
 
 // ---- Start ---------------------------------------------------------------------
+// Recipients first, so they do not wait for the PDF; again once its boxes are on.
+// pdf.js is imported only after them: a static import would hold up this whole
+// script, Recipients included, until the large library had loaded.
+renderSidebar();
+const pdfjsLib = await import("{% static 'filemanager/vendor/pdfjs/pdf.min.mjs' %}");
+pdfjsLib.GlobalWorkerOptions.workerSrc = "{% static 'filemanager/vendor/pdfjs/pdf.worker.min.mjs' %}";
 pageEls = await renderPdfPages(pdfjsLib, pagesEl, PDF_URL);
 initialBoxes.forEach((b) => {
     if (b.page <= pageEls.length) addBox(b.signer, b.field_type, b);

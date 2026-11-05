@@ -116,6 +116,23 @@
     background: var(--light-gray);
 }
 
+/* A comment button while the other kind of comment box is in use */
+.btn-outline:disabled,
+.btn-outline:disabled:hover {
+    background: var(--white);
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+/* The sign button while the comment is too long for its box */
+.btn-primary:disabled,
+.btn-primary:disabled:hover {
+    background: var(--orange);
+    opacity: 0.5;
+    transform: none;
+    cursor: not-allowed;
+}
+
 .alert-info {
     background: var(--light-blue);
     color: var(--primary-blue);
@@ -494,6 +511,13 @@
     font-size: 0.8rem;
 }
 
+/* The shared comment card's note on who writes in it */
+.sg-place-route {
+    margin-top: 0.4rem;
+    font-size: 0.75rem;
+    color: var(--gray);
+}
+
 .sg-place-pages {
     min-height: 60vh;
     padding: 1rem;
@@ -705,6 +729,84 @@
 
 .sg-target-date:hover {
     background: #f3f4f6;
+}
+
+/* Comment box: shows the comment as it is typed in the side panel, as it will be
+   printed. The text fills the box exactly, as on the PDF, so the border and
+   padding sit just outside it: content-box, pulled back by negative margins of
+   border + padding. The script sets the font size; the line height is the PDF's.
+   place-items is reset because it also centres a block's children in current
+   browsers. */
+.sg-target-comment {
+    display: block;
+    place-items: normal;
+    box-sizing: content-box;
+    margin: -6px -8px;
+    padding: 4px 6px;
+    color: #17212b;
+    font-weight: 400;
+    line-height: 1.25;
+    text-align: left;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* Too long for its box even at the smallest size */
+.sg-target-overflow,
+.sg-target-overflow:hover {
+    border-color: var(--error-red);
+    background: #fee2e2;
+}
+
+.sg-target-comment:empty::before {
+    content: "💬 Comment (optional)";
+    color: var(--secondary-blue);
+    font-weight: 700;
+}
+
+/* Shared box: the comments so far, then this signer's in blue. Line breaks typed
+   in any of them show, from .sg-target-comment's pre-wrap. */
+.sg-comment-mine {
+    color: var(--secondary-blue);
+}
+
+.sg-comment-mine span:empty::before {
+    content: "your comment";
+    font-style: italic;
+    opacity: 0.75;
+}
+
+/* Comment field in the side panel */
+.sg-comment-label {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.4rem;
+    margin-top: 1.5rem;
+    font-weight: 600;
+}
+
+.sg-comment-label small {
+    color: var(--gray);
+    font-weight: 400;
+}
+
+.sg-comment {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    margin-top: 0.4rem;
+    padding: 0.5rem 0.65rem;
+    border: 1px solid #cbd3dd;
+    border-radius: 6px;
+    font: inherit;
+    resize: vertical;
+}
+
+.sg-comment:focus {
+    outline: none;
+    border-color: var(--secondary-blue);
+    box-shadow: 0 0 0 3px var(--light-blue);
 }
 
 .sg-status {

@@ -274,6 +274,8 @@ class Signer(models.Model):
     status = models.CharField(max_length=10, choices=Status, default=Status.WAITING)
     signature_image = models.ImageField(upload_to='signing/signatures/', blank=True)
     signed_at = models.DateTimeField(null=True, blank=True)
+    # Typed when signing; printed in their own comment box, or in the shared one
+    comment = models.TextField(blank=True)
 
     class Meta:
         ordering = ['signing_order']
@@ -296,6 +298,7 @@ class SigningField(models.Model):
     class FieldType(models.TextChoices):
         SIGNATURE = 'signature', 'Signature'
         DATE = 'date', 'Date'
+        COMMENT = 'comment', 'Comment'
 
     signer = models.ForeignKey(Signer, on_delete=models.CASCADE, related_name='fields')
     field_type = models.CharField(max_length=10, choices=FieldType)
@@ -314,6 +317,25 @@ class SigningField(models.Model):
                 name='unique_signer_field_type',
             ),
         ]
+
+
+class SharedCommentField(models.Model):
+    """The one box of a request where everyone's comment is printed, all together
+    in signing order. A request has it or comment boxes of their own for signers,
+    not both."""
+
+    signing_request = models.OneToOneField(
+        SigningRequest,
+        on_delete=models.CASCADE,
+        related_name='shared_comment_field',
+    )
+    page = models.PositiveIntegerField()
+
+    # Position and size as a 0-1 ratio of the page width/height, as SigningField
+    x = models.FloatField()
+    y = models.FloatField()
+    width = models.FloatField()
+    height = models.FloatField()
 
 
 class SigningActivity(models.Model):

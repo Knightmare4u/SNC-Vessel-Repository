@@ -7,6 +7,7 @@ from unittest import mock
 
 from django.contrib.auth.models import Permission
 from django.core import mail
+from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.test import override_settings
@@ -16,8 +17,9 @@ from pypdf import PdfReader, PdfWriter
 
 from .. import emails
 from ..models import FileActivity, Signer, SigningRequest, UserSignature
-from ..services import filesystem
+from ..services import filesystem, notifications
 from ..services import signing as signing_service
+from ..utils import display_name
 from .base import StorageTestCase, no_static_manifest
 
 
@@ -611,6 +613,185 @@ class SigningTests(StorageTestCase):
         self.assertNotEqual(signed, self.original)
         # Signatures go on the existing page; no signature table is appended
         self.assertEqual(len(PdfReader(io.BytesIO(signed)).pages), 1)
+
+    SHARED_BOX = {
+        'field_type': 'shared_comment', 'page': 1,
+        'x': 0.1, 'y': 0.3, 'width': 0.8, 'height': 0.2,
+    }  # fmt: skip
+
+    def send_with_comment_boxes(self, own=False, shared=False):
+        """A manual request where signer2 has their own comment box if own, and
+        there is a shared comment box if shared."""
+        self.create_request(placement_mode='manual')
+        signing_request = SigningRequest.objects.get()
+        signer1 = signing_request.signers.get(user=self.signer1)
+        signer2 = signing_request.signers.get(user=self.signer2)
+        boxes = [self.signature_box(signer1), self.signature_box(signer2, x=0.5)]
+        if own:
+            boxes.append(self.own_comment_box(signer2))
+        if shared:
+            boxes.append(self.SHARED_BOX)
+        self.place_and_send(signing_request, boxes)
+        return signing_request
+
+    def own_comment_box(self, signer):
+        return self.signature_box(
+            signer, field_type='comment', y=0.55, width=0.8, height=0.2
+        )
+
+    def sign_directly(self, user, signing_request, comment):
+        """sign() itself, so a refusal comes back as a ValidationError."""
+        return signing_service.sign(
+            signing_request=signing_request,
+            actor=user,
+            signature_png=base64.b64decode(make_signature().split(',', 1)[1]),
+            comment=comment,
+        )
+
+    def sign_with_comment(self, user, signing_request, comment):
+        return self.post_signature(
+            user,
+            signing_request,
+            {'source': 'drawn', 'signature': make_signature(), 'comment': comment},
+        )
+
+    def test_only_one_shared_comment_box(self):
+        signing_request = self.send_with_comment_boxes(shared=True)
+        self.assertEqual(signing_request.shared_comment_field.width, 0.8)
+        # Everyone comments in it
+        for signer in signing_request.signers.all():
+            self.assertEqual(signing_service.comment_box(signer), 'shared')
+
+        SigningRequest.objects.all().delete()
+        self.create_request(placement_mode='manual')
+        with self.assertRaisesMessage(ValidationError, 'Invalid signature box.'):
+            signing_service.save_fields(
+                SigningRequest.objects.get(), [self.SHARED_BOX, self.SHARED_BOX]
+            )
+
+    def test_own_and_shared_comment_boxes_do_not_mix(self):
+        self.create_request(placement_mode='manual')
+        signing_request = SigningRequest.objects.get()
+        signer2 = signing_request.signers.get(user=self.signer2)
+
+        with self.assertRaisesMessage(ValidationError, 'not both'):
+            signing_service.save_fields(
+                signing_request, [self.own_comment_box(signer2), self.SHARED_BOX]
+            )
+
+    def test_shared_box_names_whose_comment_it_is(self):
+        signing_request = self.send_with_comment_boxes(shared=True)
+
+        self.sign_with_comment(self.signer1, signing_request, 'Checked page 1')
+        self.sign_with_comment(self.signer2, signing_request, 'Agreed')
+
+        text = PdfReader(io.BytesIO(self.read('A/doc.pdf'))).pages[0].extract_text()
+        self.assertIn(f'{display_name(self.signer1)}: Checked page 1', text)
+        self.assertIn(f'{display_name(self.signer2)}: Agreed', text)
+
+    def test_own_box_holds_just_the_comment(self):
+        signing_request = self.send_with_comment_boxes(own=True)
+        signer2 = signing_request.signers.get(user=self.signer2)
+        self.assertEqual(signing_service.comment_box(signer2), 'own')
+
+        self.sign_as(self.signer1, signing_request)
+        # Browsers send a textarea's line breaks as \r\n
+        self.sign_with_comment(self.signer2, signing_request, 'Fix item 3\r\n第三項')
+
+        signing_request.refresh_from_db()
+        self.assertEqual(signing_request.status, SigningRequest.Status.COMPLETED)
+        text = PdfReader(io.BytesIO(self.read('A/doc.pdf'))).pages[0].extract_text()
+        # Line breaks and Chinese included, and no name
+        self.assertIn('Fix item 3\n第三項', text)
+        self.assertNotIn(f'{display_name(self.signer2)}:', text)
+
+    def test_comment_shrinks_to_fit_its_box(self):
+        signing_request = self.send_with_comment_boxes(own=True)
+        signer2 = signing_request.signers.get(user=self.signer2)
+
+        self.assertEqual(
+            signing_service.comment_fit(signing_request, signer2, 'OK'),
+            (signing_service.COMMENT_MAX_SIZE, True),
+        )
+        size, fits = signing_service.comment_fit(signing_request, signer2, '測' * 50)
+        self.assertTrue(fits)
+        self.assertLess(size, signing_service.COMMENT_MAX_SIZE)
+        self.assertEqual(
+            signing_service.comment_fit(signing_request, signer2, '測' * 500),
+            (signing_service.COMMENT_MIN_SIZE, False),
+        )
+
+    def test_comment_too_long_for_its_box_is_rejected(self):
+        signing_request = self.send_with_comment_boxes(own=True)
+        self.sign_as(self.signer1, signing_request)
+
+        # Even at the smallest size it runs past the bottom of the box
+        with self.assertRaisesMessage(ValidationError, 'too long to fit in its box'):
+            self.sign_directly(self.signer2, signing_request, '測' * 500)
+        self.assertEqual(
+            self.signer_status(signing_request, self.signer2), Signer.Status.PENDING
+        )
+
+    def test_shared_box_counts_the_comments_already_in_it(self):
+        signing_request = self.send_with_comment_boxes(shared=True)
+        # Three of the four lines the box holds at the smallest size
+        comment = '測' * 50
+
+        self.sign_directly(self.signer1, signing_request, comment)
+        # The same comment fitted on its own, but not below the first one
+        with self.assertRaisesMessage(ValidationError, 'too long to fit in its box'):
+            self.sign_directly(self.signer2, signing_request, comment)
+
+    def test_comment_needs_a_comment_box(self):
+        # Auto placement has no boxes, so no comment box either
+        self.create_request()
+        signing_request = SigningRequest.objects.get()
+
+        with self.assertRaisesMessage(ValidationError, 'There is no comment box for you'):
+            self.sign_directly(self.signer1, signing_request, 'Hello')
+        self.assertEqual(
+            self.signer_status(signing_request, self.signer1), Signer.Status.PENDING
+        )
+
+    def emails_to_sender(self):
+        return [m for m in mail.outbox if 'sender@x.com' in m.to]
+
+    def test_sender_is_emailed_a_comment_right_away(self):
+        signing_request = self.send_with_comment_boxes(shared=True)
+        mail.outbox = []
+
+        with self.captureOnCommitCallbacks(execute=True):
+            self.sign_directly(self.signer1, signing_request, 'Check page 2')
+
+        to_sender = self.emails_to_sender()
+        self.assertEqual(len(to_sender), 1)
+        self.assertIn('Check page 2', to_sender[0].body)
+
+    def test_last_comment_comes_in_the_completed_email(self):
+        signing_request = self.send_with_comment_boxes(shared=True)
+        mail.outbox = []
+
+        # No comment, no notice
+        with self.captureOnCommitCallbacks(execute=True):
+            self.sign_directly(self.signer1, signing_request, '')
+        self.assertEqual(self.emails_to_sender(), [])
+
+        # One email, not a comment notice as well
+        with self.captureOnCommitCallbacks(execute=True):
+            self.sign_directly(self.signer2, signing_request, 'Agreed')
+        to_sender = self.emails_to_sender()
+        self.assertEqual(len(to_sender), 1)
+        self.assertIn('fully signed', to_sender[0].subject)
+        self.assertIn('Agreed', to_sender[0].body)
+
+    def test_sender_is_not_told_of_their_own_comment(self):
+        self.create_request(signers=[self.sender, self.signer1])
+        signer = SigningRequest.objects.get().signers.get(user=self.sender)
+        signer.comment = 'Note to self'
+
+        notifications.notify_signing_comment(signer)
+
+        self.assertEqual(mail.outbox, [])
 
     def test_delete_draft_frees_the_file(self):
         self.create_request(placement_mode='manual')

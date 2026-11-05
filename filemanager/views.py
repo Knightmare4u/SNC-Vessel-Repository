@@ -50,6 +50,7 @@ from .models import (
     File,
     FileActivity,
     Folder,
+    SharedCommentField,
     Signer,
     SigningActivity,
     SigningField,
@@ -1192,6 +1193,20 @@ def signing_fields(request, pk):
     else:
         form = SigningFieldsForm()
 
+    boxes_data = [
+        {'signer': field.signer_id, 'field_type': field.field_type, **_position(field)}
+        for field in SigningField.objects.filter(signer__in=signers)
+    ]
+    shared = SharedCommentField.objects.filter(signing_request=signing_request).first()
+    if shared:
+        boxes_data.append(
+            {
+                'signer': None,
+                'field_type': signing_service.SHARED_COMMENT,
+                **_position(shared),
+            }
+        )
+
     return render(
         request,
         'filemanager/signing/fields.html',
@@ -1206,20 +1221,20 @@ def signing_fields(request, pk):
                 }
                 for signer in signers
             ],
-            'boxes_data': [
-                {
-                    'signer': field.signer_id,
-                    'field_type': field.field_type,
-                    'page': field.page,
-                    'x': field.x,
-                    'y': field.y,
-                    'width': field.width,
-                    'height': field.height,
-                }
-                for field in SigningField.objects.filter(signer__in=signers)
-            ],
+            'boxes_data': boxes_data,
         },
     )
+
+
+def _position(box):
+    """Where a placed box is: its page, and x, y, width and height as 0-1 ratios."""
+    return {
+        'page': box.page,
+        'x': box.x,
+        'y': box.y,
+        'width': box.width,
+        'height': box.height,
+    }
 
 
 @login_required
@@ -1268,6 +1283,7 @@ def signing_sign(request, pk):
                     actor=request.user,
                     signature_png=form.cleaned_data['signature_png'],
                     save_as_default=form.cleaned_data['save_as_default'],
+                    comment=form.cleaned_data['comment'],
                 )
             except ValidationError as e:
                 form.add_error(None, e)
@@ -1276,6 +1292,20 @@ def signing_sign(request, pk):
                 return redirect('signing_detail', pk=signing_request.pk)
     else:
         form = SignForm(user=request.user)
+
+    # Only this signer's boxes; other people's are not shown
+    my_boxes = list(
+        signer.fields.values('field_type', 'page', 'x', 'y', 'width', 'height')
+    )
+    comment_box = signing_service.comment_box(signer)
+    shared_box = None
+    if comment_box == 'shared':
+        # The comments so far; this signer's is added below them as they type
+        shared_box = {
+            **_position(signing_request.shared_comment_field),
+            'comments': signing_service.shared_comments(signing_request),
+            'name': display_name(request.user),
+        }
 
     return render(
         request,
@@ -1293,12 +1323,36 @@ def signing_sign(request, pk):
             ),
             'manual': signing_request.placement_mode
             == SigningRequest.PlacementMode.MANUAL,
-            # Only this signer's boxes; other people's are not shown
-            'my_boxes': list(
-                signer.fields.values('field_type', 'page', 'x', 'y', 'width', 'height')
+            'my_boxes': my_boxes,
+            'has_date_box': any(
+                box['field_type'] == SigningField.FieldType.DATE for box in my_boxes
             ),
+            'comment_box': comment_box,
+            'shared_box': shared_box,
         },
     )
+
+
+@login_required
+@require_POST
+def signing_comment_fit(request, pk):
+    """For the sign page's preview as the comment is typed: the size it would be
+    printed at and whether it fits. Measured the way the PDF is drawn, so the
+    page never shows a comment as fitting that signing then turns away."""
+    signing_request = get_visible_request(request.user, pk)
+    signer = signing_request.signers.filter(
+        user=request.user, status=Signer.Status.PENDING
+    ).first()
+    if signer is None or signing_service.comment_box(signer) is None:
+        raise Http404
+    try:
+        # Cleaned as the sign form cleans it, so it is what sign() would get
+        comment = SignForm.base_fields['comment'].clean(request.POST.get('comment', ''))
+    except ValidationError:
+        # Over the form's cap, which is more than any box holds
+        return JsonResponse({'size': signing_service.COMMENT_MIN_SIZE, 'fits': False})
+    size, fits = signing_service.comment_fit(signing_request, signer, comment)
+    return JsonResponse({'size': size, 'fits': fits})
 
 
 @login_required

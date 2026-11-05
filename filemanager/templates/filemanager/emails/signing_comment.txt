@@ -1,0 +1,12 @@
+{% autoescape off %}Hello {{ recipient_name }},
+
+{{ signer_name }} left a comment when signing {{ filename }}:
+
+{{ comment }}
+
+View the signing request here:
+{{ url }}
+
+--
+This is an automated message from SNSeaFiles. Please do not reply.
+{% endautoescape %}

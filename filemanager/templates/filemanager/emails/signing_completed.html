@@ -26,13 +26,17 @@
     <tr>
         <th align="left" style="padding: 10px 8px; border-bottom: 1px solid #dfe4ea; color: #6b7787; font-size: 12px; font-weight: 600;">ORDER</th>
         <th align="left" style="padding: 10px 8px; border-bottom: 1px solid #dfe4ea; color: #6b7787; font-size: 12px; font-weight: 600;">SIGNER</th>
-        <th align="left" style="padding: 10px 8px; border-bottom: 1px solid #dfe4ea; color: #6b7787; font-size: 12px; font-weight: 600;">SIGNED ON</th>
+        {# A set width, so a long comment beside it cannot squeeze the date onto two lines in mail clients that drop white-space #}
+        <th align="left" width="100" style="padding: 10px 8px; border-bottom: 1px solid #dfe4ea; color: #6b7787; font-size: 12px; font-weight: 600; white-space: nowrap;">SIGNED ON</th>
     </tr>
     {% for signer in signers %}
     <tr>
-        <td style="padding: 12px 8px; border-bottom: 1px solid #dfe4ea;">{{ signer.order }}</td>
-        <td style="padding: 12px 8px; border-bottom: 1px solid #dfe4ea;"><b>{{ signer.name }}</b></td>
-        <td style="padding: 12px 8px; border-bottom: 1px solid #dfe4ea;">{{ signer.signed_at|date:"Y-m-d" }}</td>
+        <td style="padding: 12px 8px; border-bottom: 1px solid #dfe4ea; vertical-align: top;">{{ signer.order }}</td>
+        <td style="padding: 12px 8px; border-bottom: 1px solid #dfe4ea; word-break: break-word; vertical-align: top;">
+            <b>{{ signer.name }}</b>
+            {% if signer.comment %}<div style="margin-top: 4px; color: #6b7787;">💬 {{ signer.comment|linebreaksbr }}</div>{% endif %}
+        </td>
+        <td style="padding: 12px 8px; border-bottom: 1px solid #dfe4ea; white-space: nowrap; vertical-align: top;">{{ signer.signed_at|date:"Y-m-d" }}</td>
     </tr>
     {% endfor %}
 </table>

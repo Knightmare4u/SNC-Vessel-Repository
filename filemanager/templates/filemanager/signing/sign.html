@@ -19,7 +19,7 @@
         <p class="sg-muted">{{ signing_request.filename }}</p>
         <div class="sg-status">Order {{ signer.signing_order }} of {{ signer_count }} · {{ user|display_name }}</div>
         {% if manual %}
-        <p>Please review the document. Your signature goes in the highlighted box{% if my_boxes|length > 1 %}, and today's date is filled in for you{% endif %}.</p>
+        <p>Please review the document. Your signature goes in the highlighted box{% if has_date_box %}, and today's date is filled in for you{% endif %}.</p>
         {% else %}
         <p>Please review the document. Your signature and today's date will be added to a signature page at the end of the PDF.</p>
         {% endif %}
@@ -28,6 +28,14 @@
 
         {% for error in form.non_field_errors %}<div class="alert alert-error sg-mt">{{ error }}</div>{% endfor %}
         {% for error in form.signature_file.errors %}<div class="alert alert-error sg-mt">{{ error }}</div>{% endfor %}
+        {% for error in form.comment.errors %}<div class="alert alert-error sg-mt">{{ error }}</div>{% endfor %}
+
+        {% if comment_box %}
+        {# Sent with the signature: the textarea joins the dialog's form (form="sign-form") #}
+        <label class="sg-comment-label" for="{{ form.comment.id_for_label }}">💬 Comment <small>optional · {% if comment_box == 'shared' %}added to the shared box{% else %}printed in its box{% endif %}</small></label>
+        {{ form.comment }}
+        <div class="alert alert-error sg-mt" id="comment-too-long" hidden>Your comment is too long to fit in its box. Please shorten it.</div>
+        {% endif %}
 
         <button type="button" class="btn btn-primary sg-btn-block sg-mt-lg" id="open-pad">✍ Sign document</button>
     </aside>
@@ -75,6 +83,7 @@
     </form>
 </div>
 {{ my_boxes|json_script:"my-boxes" }}
+{{ shared_box|json_script:"shared-box" }}
 {% endblock %}
 
 {% block extra_js %}
@@ -89,6 +98,8 @@ const boxes = JSON.parse(document.getElementById('my-boxes').textContent);
 const pageEls = await renderPdfPages(pdfjsLib, pagesEl, "{% url 'signing_pdf' signing_request.pk %}");
 
 let target = null;
+// Where the comment typed in the side panel shows on the PDF
+let commentOut = null;
 boxes.forEach((box) => {
     const pageEl = pageEls[box.page - 1];
     if (!pageEl) return;
@@ -100,6 +111,10 @@ boxes.forEach((box) => {
         target.textContent = 'Click to sign';
         target.addEventListener('click', () => document.getElementById('open-pad').click());
         placeOnPage(target, pageEl, box);
+    } else if (box.field_type === 'comment') {
+        commentOut = document.createElement('div');
+        commentOut.className = 'sg-target sg-target-comment';
+        placeOnPage(commentOut, pageEl, box);
     } else {
         const date = document.createElement('div');
         date.className = 'sg-target sg-target-date';
@@ -107,6 +122,76 @@ boxes.forEach((box) => {
         placeOnPage(date, pageEl, box);
     }
 });
+
+// The shared box: the comments so far, then this signer's below them as they type
+const shared = JSON.parse(document.getElementById('shared-box').textContent);
+if (shared && pageEls[shared.page - 1]) {
+    const sharedEl = document.createElement('div');
+    sharedEl.className = 'sg-target sg-target-comment';
+    for (const text of shared.comments) {
+        const line = document.createElement('div');
+        line.textContent = text;
+        sharedEl.appendChild(line);
+    }
+    const mine = document.createElement('div');
+    mine.className = 'sg-comment-mine';
+    mine.textContent = `${shared.name}: `;
+    commentOut = document.createElement('span');
+    mine.appendChild(commentOut);
+    sharedEl.appendChild(mine);
+    placeOnPage(sharedEl, pageEls[shared.page - 1], shared);
+}
+
+// The text shows as it is typed; the size it will be printed at, and whether it
+// fits at all, come from the server once typing pauses. The server measures the
+// way the PDF is drawn, so the page and signing never disagree.
+if (commentOut) {
+    const commentInput = document.getElementById('id_comment');
+    const commentBox = commentOut.closest('.sg-target');
+    const pageEl = commentBox.parentElement;
+    const csrfToken = document.querySelector('#sign-form [name=csrfmiddlewaretoken]').value;
+    let size = null;  // pt, from the server's latest answer
+    let asked = 0;    // answers to older questions are dropped
+    let timer;
+
+    // pt to px at the page's displayed size, which follows the window
+    const showSize = () => {
+        if (size) commentBox.style.fontSize = `${size * pageEl.clientWidth / pageEl.dataset.pointWidth}px`;
+    };
+
+    async function checkComment() {
+        const question = ++asked;
+        const response = await fetch("{% url 'signing_comment_fit' signing_request.pk %}", {
+            method: 'POST',
+            headers: { 'X-CSRFToken': csrfToken },
+            body: new URLSearchParams({ comment: commentInput.value }),
+        });
+        if (!response.ok) return;
+        const answer = await response.json();
+        if (question !== asked) return;
+        size = answer.size;
+        showSize();
+        // Too long even at the smallest size: signing would be turned away, so it
+        // waits until the comment is shortened. No comment is never too long.
+        const tooLong = !answer.fits && commentInput.value.trim() !== '';
+        commentBox.classList.toggle('sg-target-overflow', tooLong);
+        document.getElementById('comment-too-long').hidden = !tooLong;
+        document.getElementById('open-pad').disabled = tooLong;
+    }
+
+    commentInput.addEventListener('input', () => {
+        commentOut.textContent = commentInput.value;
+        clearTimeout(timer);
+        timer = setTimeout(checkComment, 300);
+    });
+    window.addEventListener('resize', showSize);
+    // A comment kept after a failed submit
+    commentOut.textContent = commentInput.value;
+    checkComment();
+    // Like the signature box opening the dialog, the comment box leads to its field
+    commentBox.addEventListener('click', () => commentInput.focus());
+}
+
 // Open on the page where this person signs
 target?.scrollIntoView({ block: 'center' });
 </script>

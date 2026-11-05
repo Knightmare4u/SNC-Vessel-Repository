@@ -10,6 +10,7 @@ import tempfile
 import uuid
 from collections import defaultdict
 from datetime import timedelta
+from xml.sax.saxutils import escape
 
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.files.base import ContentFile
@@ -24,13 +25,22 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 from reportlab.platypus import Image as PdfImage
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import (
+    Frame,
+    KeepInFrame,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 from ..models import (
     File,
+    SharedCommentField,
     Signer,
     SigningActivity,
     SigningField,
@@ -56,11 +66,33 @@ REQUEST_SIGNATURES = 'filemanager.request_signatures'
 # runs daily, so they then get one reminder a day until they sign
 REMINDER_AFTER = timedelta(days=1)
 
-# Built-in CID font: renders Chinese names without bundling a font file
-TABLE_FONT = 'MSung-Light'
-pdfmetrics.registerFont(UnicodeCIDFont(TABLE_FONT))
+# Font for the text added to signed PDFs: names, dates and comments. It is embedded
+# (only the characters used), so every viewer shows the text, the site's pdf.js
+# included; a font that is only named needs the viewer to have it. Noto Sans TC
+# covers Chinese, under the SIL Open Font License (fonts/OFL.txt).
+TABLE_FONT = 'NotoSansTC'
+pdfmetrics.registerFont(
+    TTFont(
+        TABLE_FONT,
+        os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            'fonts',
+            'NotoSansTC-Regular.ttf',
+        ),
+    )
+)
 # Height of a signature in the signature table; every signer row is sized to fit one
 TABLE_SIGNATURE_HEIGHT = 18 * mm
+# Comments start at the largest size and shrink until they fit their box. One that
+# does not fit even at the smallest size is turned away when signing, so the box
+# alone decides how much can be written. The sign page's preview shrinks the same
+# way. 7 is DocuSign's smallest text size.
+COMMENT_MAX_SIZE = 12
+COMMENT_MIN_SIZE = 7
+
+# field_type of the shared comment box among the boxes from the place page. It
+# belongs to no signer, so it is a SharedCommentField rather than a SigningField.
+SHARED_COMMENT = 'shared_comment'
 
 SIGNATURE_DATA_URL_PREFIX = 'data:image/png;base64,'
 MAX_SIGNATURE_BYTES = 2 * 1024 * 1024
@@ -327,27 +359,33 @@ def create_and_send(*, source_path, signers, notify_users, actor):
 @transaction.atomic
 def save_fields(signing_request, fields):
     """Replace a draft's boxes. Each field is a dict with signer (pk), field_type,
-    page (1-based) and x, y, width, height as 0-1 ratios of the page shown."""
+    page (1-based) and x, y, width, height as 0-1 ratios of the page shown. The
+    shared comment box has field_type SHARED_COMMENT and no signer; a request has
+    either it or comment boxes of their own for signers, not both."""
     if signing_request.status != SigningRequest.Status.DRAFT:
         raise ValidationError('Boxes can only be changed before the request is sent.')
     signers = {signer.pk: signer for signer in signing_request.signers.all()}
     with signing_request.original_file.open('rb') as f:
         page_count = len(PdfReader(f).pages)
 
-    rows, seen = [], set()
+    rows, seen, shared = [], set(), None
     for field in fields:
         try:
-            signer = signers[int(field['signer'])]
             field_type = field['field_type']
+            signer = (
+                None if field_type == SHARED_COMMENT else signers[int(field['signer'])]
+            )
             page = int(field['page'])
             x, y, width, height = (
                 float(field[k]) for k in ('x', 'y', 'width', 'height')
             )
         except (KeyError, TypeError, ValueError):
             raise ValidationError('Invalid signature box.')
+        # One box of each type per signer, and one shared comment box
+        key = (signer.pk if signer else None, field_type)
         if (
-            field_type not in SigningField.FieldType.values
-            or (signer.pk, field_type) in seen
+            field_type not in [*SigningField.FieldType.values, SHARED_COMMENT]
+            or key in seen
         ):
             raise ValidationError('Invalid signature box.')
         # A little slack for rounding in the browser
@@ -361,21 +399,23 @@ def save_fields(signing_request, fields):
             and y + height <= 1.001
         ):
             raise ValidationError('A signature box is outside the page.')
-        seen.add((signer.pk, field_type))
-        rows.append(
-            SigningField(
-                signer=signer,
-                field_type=field_type,
-                page=page,
-                x=x,
-                y=y,
-                width=width,
-                height=height,
-            )
+        seen.add(key)
+        box = {'page': page, 'x': x, 'y': y, 'width': width, 'height': height}
+        if signer is None:
+            shared = SharedCommentField(signing_request=signing_request, **box)
+        else:
+            rows.append(SigningField(signer=signer, field_type=field_type, **box))
+    if shared and any(row.field_type == SigningField.FieldType.COMMENT for row in rows):
+        raise ValidationError(
+            'Use either comment boxes for each person or the shared comment box, '
+            'not both.'
         )
 
     SigningField.objects.filter(signer__signing_request=signing_request).delete()
     SigningField.objects.bulk_create(rows)
+    SharedCommentField.objects.filter(signing_request=signing_request).delete()
+    if shared:
+        shared.save()
 
 
 def delete_draft(signing_request):
@@ -385,10 +425,34 @@ def delete_draft(signing_request):
     signing_request.delete()
 
 
-def sign(*, signing_request, actor, signature_png, save_as_default=False):
+def comment_box(signer):
+    """Where the signer's comment is printed: 'own' in their own comment box,
+    'shared' in the request's shared box, or None if there is neither."""
+    if signer.fields.filter(field_type=SigningField.FieldType.COMMENT).exists():
+        return 'own'
+    if SharedCommentField.objects.filter(
+        signing_request_id=signer.signing_request_id
+    ).exists():
+        return 'shared'
+    return None
+
+
+def shared_comments(signing_request):
+    """The lines of the shared comment box so far: "Name: comment" for each
+    signer who wrote a comment, in signing order."""
+    signers = (
+        signing_request.signers.filter(status=Signer.Status.SIGNED)
+        .exclude(comment='')
+        .select_related('user')
+    )
+    return [f'{display_name(signer.user)}: {signer.comment}' for signer in signers]
+
+
+def sign(*, signing_request, actor, signature_png, save_as_default=False, comment=''):
     """Apply the actor's signature and pass the request to the next signer,
     completing it after the last one. save_as_default also keeps the signature
-    as the actor's default for next time."""
+    as the actor's default for next time; comment is printed in their comment
+    box, own or shared."""
     with transaction.atomic():
         signing_request = SigningRequest.objects.select_for_update().get(
             pk=signing_request.pk
@@ -399,13 +463,21 @@ def sign(*, signing_request, actor, signature_png, save_as_default=False):
         signer = signing_request.signers.filter(status=Signer.Status.PENDING).first()
         if signer is None or signer.user_id != actor.pk:
             raise ValidationError('It is not your turn to sign.')
+        # The page only offers a comment field to people with a box to print it in
+        if comment and comment_box(signer) is None:
+            raise ValidationError('There is no comment box for you on this document.')
+        if comment and not comment_fit(signing_request, signer, comment)[1]:
+            raise ValidationError(
+                'Your comment is too long to fit in its box. Please shorten it.'
+            )
 
         signer.signature_image.save(
             f'{uuid.uuid4().hex}.png', ContentFile(signature_png), save=False
         )
         signer.status = Signer.Status.SIGNED
         signer.signed_at = timezone.now()
-        signer.save(update_fields=['signature_image', 'status', 'signed_at'])
+        signer.comment = comment
+        signer.save(update_fields=['signature_image', 'status', 'signed_at', 'comment'])
         if save_as_default:
             save_user_signature(actor, signature_png)
 
@@ -434,6 +506,11 @@ def sign(*, signing_request, actor, signature_png, save_as_default=False):
             transaction.on_commit(
                 lambda: notifications.notify_signing_turn(next_signer)
             )
+            # The last signer's comment is in the completed email instead
+            if comment:
+                transaction.on_commit(
+                    lambda: notifications.notify_signing_comment(signer)
+                )
         else:
             _complete(signing_request, actor, pdf)
 
@@ -604,15 +681,24 @@ def _render_on_fields(signing_request):
         signer__signing_request=signing_request, signer__status=Signer.Status.SIGNED
     ).select_related('signer'):
         fields_by_page[field.page].append(field)
+    shared_box = SharedCommentField.objects.filter(
+        signing_request=signing_request
+    ).first()
+    shared_texts = shared_comments(signing_request) if shared_box else []
 
     writer = PdfWriter()
     with signing_request.original_file.open('rb') as f:
         for number, page in enumerate(PdfReader(f).pages, start=1):
-            if number in fields_by_page:
+            shared = (
+                (shared_box, shared_texts)
+                if shared_texts and shared_box.page == number
+                else None
+            )
+            if number in fields_by_page or shared:
                 # Boxes were placed on the page as displayed, rotation included;
                 # make the content upright too so the coordinates line up
                 page.transfer_rotation_to_content()
-                overlay = _render_overlay(page, fields_by_page[number])
+                overlay = _render_overlay(page, fields_by_page[number], shared)
                 page.merge_page(PdfReader(io.BytesIO(overlay)).pages[0])
             writer.add_page(page)
         output = io.BytesIO()
@@ -620,23 +706,29 @@ def _render_on_fields(signing_request):
     return output.getvalue()
 
 
-def _render_overlay(page, fields):
-    """A transparent page with each signer's signature or date drawn in its box."""
+def _render_overlay(page, fields, shared=None):
+    """A transparent page with each signer's signature, date or comment drawn in
+    its box, and shared, a (SharedCommentField, lines) pair, drawn in its box."""
     # The visible area (crop box) is what the sender saw, and may not start at 0,0
     box = page.cropbox
     left, bottom = float(box.left), float(box.bottom)
     page_width, page_height = float(box.width), float(box.height)
+
+    def area(placed):
+        # Ratios are measured from the top left; PDF coordinates from the bottom left
+        return (
+            left + placed.x * page_width,
+            bottom + (1 - placed.y - placed.height) * page_height,
+            placed.width * page_width,
+            placed.height * page_height,
+        )
 
     output = io.BytesIO()
     pdf = canvas.Canvas(
         output, pagesize=(float(page.mediabox.right), float(page.mediabox.top))
     )
     for field in fields:
-        width = field.width * page_width
-        height = field.height * page_height
-        # Ratios are measured from the top left; PDF coordinates from the bottom left
-        x = left + field.x * page_width
-        y = bottom + (1 - field.y - field.height) * page_height
+        x, y, width, height = area(field)
         if field.field_type == SigningField.FieldType.SIGNATURE:
             pdf.drawImage(
                 ImageReader(field.signer.signature_image.path),
@@ -648,6 +740,9 @@ def _render_overlay(page, fields):
                 preserveAspectRatio=True,
                 anchor='c',
             )
+        elif field.field_type == SigningField.FieldType.COMMENT:
+            if field.signer.comment:
+                _draw_comment(pdf, [field.signer.comment], x, y, width, height)
         else:
             size = min(height * 0.6, 12)
             pdf.setFont(TABLE_FONT, size)
@@ -656,8 +751,76 @@ def _render_overlay(page, fields):
                 y + (height - size) / 2 + size * 0.2,
                 timezone.localtime(field.signer.signed_at).strftime('%Y-%m-%d'),
             )
+    if shared:
+        shared_box, lines = shared
+        _draw_comment(pdf, lines, *area(shared_box))
     pdf.save()
     return output.getvalue()
+
+
+def comment_fit(signing_request, signer, comment):
+    """How the signer's comment would be printed in its box, below the comments
+    already there when it goes in the shared box: (size, fits), with size the
+    largest from COMMENT_MAX_SIZE down to COMMENT_MIN_SIZE that fits, or
+    COMMENT_MIN_SIZE and fits False when none does."""
+    box = signer.fields.filter(field_type=SigningField.FieldType.COMMENT).first()
+    if box:
+        texts = [comment]
+    else:
+        box = signing_request.shared_comment_field
+        texts = [
+            *shared_comments(signing_request),
+            f'{display_name(signer.user)}: {comment}',
+        ]
+    with signing_request.original_file.open('rb') as f:
+        page = PdfReader(f).pages[box.page - 1]
+        # Sized as _render_overlay sees the page, rotation included
+        page.transfer_rotation_to_content()
+        width = box.width * float(page.cropbox.width)
+        height = box.height * float(page.cropbox.height)
+    _, size, fits = _fit_comment(texts, width, height)
+    return size, fits
+
+
+def _fit_comment(texts, width, height):
+    """Each text as its own paragraph, at the largest size from COMMENT_MAX_SIZE
+    down to COMMENT_MIN_SIZE that fits the box: (paragraphs, size, fits), with
+    fits False when even COMMENT_MIN_SIZE is too large."""
+    for size in range(COMMENT_MAX_SIZE, COMMENT_MIN_SIZE - 1, -1):
+        # CJK wrapping breaks between Chinese characters as well as at spaces
+        style = ParagraphStyle(
+            'comment',
+            fontName=TABLE_FONT,
+            fontSize=size,
+            leading=size * 1.25,
+            wordWrap='CJK',
+        )
+        # Paragraph reads markup: escape the text, and keep the line breaks typed
+        paragraphs = [
+            Paragraph('<br/>'.join(escape(line) for line in text.splitlines()), style)
+            for text in texts
+        ]
+        if sum(p.wrap(width, height)[1] for p in paragraphs) <= height:
+            return paragraphs, size, True
+    return paragraphs, size, False
+
+
+def _draw_comment(pdf, texts, x, y, width, height):
+    """Draw each text as its own paragraph from the top left of the box, at the
+    largest size from COMMENT_MAX_SIZE down to COMMENT_MIN_SIZE that fits."""
+    paragraphs = _fit_comment(texts, width, height)[0]
+    # Still too long at the smallest size: cut off at the bottom of the box
+    frame = Frame(
+        x,
+        y,
+        width,
+        height,
+        leftPadding=0,
+        rightPadding=0,
+        topPadding=0,
+        bottomPadding=0,
+    )
+    frame.addFromList([KeepInFrame(width, height, paragraphs, mode='truncate')], pdf)
 
 
 def _render_signature_table(signing_request):

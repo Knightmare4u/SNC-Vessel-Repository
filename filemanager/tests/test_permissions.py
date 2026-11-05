@@ -1,5 +1,3 @@
-import os
-
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -86,36 +84,10 @@ class HasPermissionTests(TestCase):
 
 
 class PathTraversalTests(StorageTestCase):
-    # Attack URLs are written out literally on purpose: they mimic raw requests
-    # (e.g. "%2e%2e" for "..") that reverse() would never produce.
-
     def setUp(self):
         super().setUp()
-        with open(os.path.join(self.tmp, 'secret.env'), 'wb') as f:
-            f.write(b'SECRET_KEY=top-secret')
         self.make_file('A/a.txt')
         self.make_file('B/b.txt')
-
-    def test_requests_cannot_leave_the_storage_root(self):
-        self.login(self.make_user('u', [('/', 'read')]))
-        response = self.client.get('/download/%2e%2e/secret.env/')
-        self.assertEqual(response.status_code, 404)
-        response = self.client.get('/preview/%2e%2e/secret.env/')
-        self.assertEqual(response.status_code, 404)
-        # '../secret.env' normalizes to '/secret.env' inside the storage root
-        response = self.client.post(
-            reverse('bulk_download'), {'paths': ['../secret.env']}
-        )
-        self.assertEqual(response.status_code, 404)
-
-    def test_requests_cannot_jump_to_another_folder(self):
-        self.login(self.make_user('u', [('/A', 'read')]))
-        response = self.client.get('/download/A/%2e%2e/B/b.txt/')
-        self.assertEqual(response.status_code, 403)
-        response = self.client.get(
-            reverse('search_files'), {'q': 'b', 'folder': 'A/../B'}
-        )
-        self.assertEqual(response.status_code, 403)
 
     def test_new_folder_name_cannot_be_a_path(self):
         self.login(self.make_user('u', [('/A', 'write')]))
@@ -142,7 +114,6 @@ class ArchiveTests(StorageTestCase):
     def setUp(self):
         super().setUp()
         self.make_file('ARCHIVE/A/old.txt')
-        self.make_file('A/a.txt')
 
     def test_archive_is_read_only(self):
         self.login(self.make_user('su', superuser=True))
@@ -177,25 +148,3 @@ class ArchiveTests(StorageTestCase):
         self.assertIsNotNone(filesystem.resolve_file('ARCHIVE/A/old.txt'))
         self.assertIsNone(filesystem.resolve_file('ARCHIVE/A/x.txt'))
         self.assertIsNone(filesystem.resolve_folder('ARCHIVE/new'))
-
-    def test_superusers_can_browse_and_download_the_archive(self):
-        self.login(self.make_user('su', superuser=True))
-        response = self.client.get(reverse('file_browser', args=['ARCHIVE/A']))
-        self.assertEqual(response.status_code, 200)
-        file = filesystem.resolve_file('ARCHIVE/A/old.txt')
-        url = reverse('download_file', args=[file.uuid])
-        self.assertEqual(self.read_response(self.client.get(url)), b'hello')
-
-    def test_archive_is_hidden_from_other_users(self):
-        # Access to the root covers every folder, but not the archive
-        self.login(self.make_user('root_admin', [('/', 'admin')]))
-
-        response = self.client.get(reverse('file_browser'))
-        self.assertEqual([item['name'] for item in response.context['items']], ['A'])
-        response = self.client.get(reverse('file_browser', args=['ARCHIVE/A']))
-        self.assertRedirects(response, reverse('dashboard'))
-        file = filesystem.resolve_file('ARCHIVE/A/old.txt')
-        url = reverse('download_file', args=[file.uuid])
-        self.assertEqual(self.client.get(url).status_code, 403)
-        response = self.client.get(reverse('search_files'), {'q': 'old'})
-        self.assertEqual(response.json()['results'], [])

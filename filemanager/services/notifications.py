@@ -54,9 +54,34 @@ def notify_signing_reminder(signer, waiting_days):
     )
 
 
+def notify_signing_comment(signer):
+    """Tell the sender what a signer commented as they signed."""
+    signing_request = signer.signing_request
+    sender = signing_request.created_by
+    # The sender's own comment needs no notice
+    if not sender.email or sender == signer.user:
+        return
+    send_email(
+        subject=(
+            f'[SNSeaFiles] {display_name(signer.user)} commented while signing: '
+            f'{signing_request.filename}'
+        ),
+        recipients=[sender.email],
+        template='filemanager/emails/signing_comment',
+        context={
+            'recipient_name': display_name(sender),
+            'signer_name': display_name(signer.user),
+            'filename': signing_request.filename,
+            'comment': signer.comment,
+            'url': _absolute_url(reverse('signing_detail', args=[signing_request.pk])),
+        },
+    )
+
+
 def notify_signing_completed(signing_request, detail, actor):
-    """Tell the sender, signers and notify_users that everyone has signed. The
-    last signer (actor) completed it and has just seen the result."""
+    """Tell the sender, signers and notify_users that everyone has signed, with
+    each signer's comment. The last signer (actor) completed it and has just seen
+    the result."""
     signers = list(signing_request.signers.select_related('user'))
     users = [
         signing_request.created_by,
@@ -82,6 +107,7 @@ def notify_signing_completed(signing_request, detail, actor):
                     'order': signer.signing_order,
                     'name': display_name(signer.user),
                     'signed_at': signer.signed_at,
+                    'comment': signer.comment,
                 }
                 for signer in signers
             ],

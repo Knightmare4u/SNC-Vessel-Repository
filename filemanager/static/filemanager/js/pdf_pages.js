@@ -7,6 +7,7 @@ export async function renderPdfPages(pdfjsLib, container, url) {
     const pdf = await pdfjsLib.getDocument(url).promise;
     container.querySelector('[data-pdf-loading]')?.remove();
     const pageEls = [];
+    const drawings = [];
     for (let number = 1; number <= pdf.numPages; number++) {
         const page = await pdf.getPage(number);
         const base = page.getViewport({ scale: 1 });
@@ -16,6 +17,8 @@ export async function renderPdfPages(pdfjsLib, container, url) {
         const pageEl = document.createElement('div');
         pageEl.className = 'sg-page';
         pageEl.dataset.page = number;
+        // Width in PDF points, for showing text at the size it will be printed
+        pageEl.dataset.pointWidth = base.width;
         pageEl.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
         const canvas = document.createElement('canvas');
         canvas.width = viewport.width;
@@ -23,8 +26,15 @@ export async function renderPdfPages(pdfjsLib, container, url) {
         pageEl.appendChild(canvas);
         container.appendChild(pageEl);
         pageEls.push(pageEl);
-        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+        drawings.push({ page, canvas, viewport });
     }
+    // Pages are drawn one after another in the background, so boxes can go on
+    // them as soon as they are laid out: drawing a large scan can take seconds
+    (async () => {
+        for (const { page, canvas, viewport } of drawings) {
+            await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+        }
+    })();
     return pageEls;
 }
 

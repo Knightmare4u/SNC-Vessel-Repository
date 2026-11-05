@@ -4,7 +4,8 @@ The original file was changed or removed during signing, so it was not replaced.
 {% endif %}
 Signers:
 {% for signer in signers %}  {{ signer.order }}. {{ signer.name }} - signed {{ signer.signed_at|date:"Y-m-d" }}
-{% endfor %}
+{% if signer.comment %}     Comment: {{ signer.comment }}
+{% endif %}{% endfor %}
 View the signing request here:
 {{ url }}
 

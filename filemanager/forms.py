@@ -125,6 +125,16 @@ class SignForm(forms.Form):
         widget=forms.FileInput(attrs={'accept': 'image/png,image/jpeg'}),
     )
     save_as_default = forms.BooleanField(required=False)
+    # In the side panel, outside the dialog's <form>, so it names the form it joins.
+    # Its box decides how much fits (signing.sign); max_length only stops huge
+    # posts, being more than a whole page holds at the smallest size.
+    comment = forms.CharField(
+        required=False,
+        max_length=20000,
+        widget=forms.Textarea(
+            attrs={'rows': 4, 'form': 'sign-form', 'class': 'sg-comment'}
+        ),
+    )
 
     def __init__(self, *args, user, **kwargs):
         super().__init__(*args, **kwargs)
