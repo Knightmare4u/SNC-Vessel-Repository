@@ -80,15 +80,12 @@ def notify_signing_comment(signer):
 
 def notify_signing_completed(signing_request, detail, actor):
     """Tell the sender, signers and notify_users that everyone has signed, with
-    each signer's comment. The last signer (actor) completed it and has just seen
-    the result."""
+    each signer's comment. The sender always gets it, to keep as a record; anyone
+    else who signed last (actor) completed it and has just seen the result."""
     signers = list(signing_request.signers.select_related('user'))
-    users = [
-        signing_request.created_by,
-        *(signer.user for signer in signers),
-        *signing_request.notify_users.all(),
-    ]
-    recipients = list(dict.fromkeys(u.email for u in users if u.email and u != actor))
+    others = [*(signer.user for signer in signers), *signing_request.notify_users.all()]
+    users = [signing_request.created_by, *(u for u in others if u != actor)]
+    recipients = list(dict.fromkeys(u.email for u in users if u.email))
     if not recipients:
         return
 

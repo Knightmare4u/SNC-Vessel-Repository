@@ -784,6 +784,14 @@ class SigningTests(StorageTestCase):
         self.assertIn('fully signed', to_sender[0].subject)
         self.assertIn('Agreed', to_sender[0].body)
 
+    def test_sender_who_signs_last_still_gets_the_completed_email(self):
+        # Even as the only signer, to keep as a record
+        self.create_request(signers=[self.sender])
+        self.sign_as(self.sender, SigningRequest.objects.get())
+
+        self.assertEqual([m.to for m in mail.outbox], [['sender@x.com']])
+        self.assertIn('fully signed', mail.outbox[0].subject)
+
     def test_sender_is_not_told_of_their_own_comment(self):
         self.create_request(signers=[self.sender, self.signer1])
         signer = SigningRequest.objects.get().signers.get(user=self.sender)
