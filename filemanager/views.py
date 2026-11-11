@@ -120,6 +120,14 @@ SIGNING_LIST_TABS = {
     'notified': 'Notified',
 }
 
+# Status filter on the Sent by me tab, in the order shown. In progress comes
+# first and is the default: it's what senders check on.
+SENT_STATUS_FILTERS = [
+    SigningRequest.Status.IN_PROGRESS,
+    SigningRequest.Status.DRAFT,
+    SigningRequest.Status.COMPLETED,
+]
+
 MICROSOFT_UNAVAILABLE = (
     'Microsoft sign-in is unavailable right now. Please try again later.'
 )
@@ -1064,9 +1072,27 @@ def signing_list(request):
     if tab not in tabs:
         tab = 'to_sign'
 
+    signing_requests = tab_querysets[tab]
+    status = None
+    status_filters = []
+    if tab == 'sent':
+        counts = signing_requests.aggregate(
+            **{s.value: Count('pk', filter=Q(status=s)) for s in SENT_STATUS_FILTERS}
+        )
+        # Nothing sent yet: no filter, so the page shows how to start one instead
+        if any(counts.values()):
+            status_filters = [
+                {'key': s.value, 'label': s.label, 'count': counts[s.value]}
+                for s in SENT_STATUS_FILTERS
+            ] + [{'key': 'all', 'label': 'All', 'count': sum(counts.values())}]
+            status = request.GET.get('status')
+            if status not in {item['key'] for item in status_filters}:
+                status = SigningRequest.Status.IN_PROGRESS.value
+            if status != 'all':
+                signing_requests = signing_requests.filter(status=status)
+
     signing_requests = (
-        tab_querysets[tab]
-        .select_related('created_by', 'file')
+        signing_requests.select_related('created_by', 'file')
         .annotate(
             signer_count=Count('signers', distinct=True),
             signed_count=Count(
@@ -1092,6 +1118,8 @@ def signing_list(request):
                 }
                 for key, label in tabs.items()
             ],
+            'status': status,
+            'status_filters': status_filters,
             'page': page,
         },
     )

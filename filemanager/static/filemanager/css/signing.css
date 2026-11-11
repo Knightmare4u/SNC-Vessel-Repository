@@ -631,6 +631,66 @@
     background: var(--light-blue);
 }
 
+/* Status filter on the Sent by me tab; the current one is aria-current="page",
+   as on the tabs */
+.sg-filter {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.sg-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.35rem 0.85rem;
+    border: 1px solid #cbd3dd;
+    border-radius: 999px;
+    background: var(--white);
+    color: #17212b;
+    font-size: 0.875rem;
+    text-decoration: none;
+}
+
+.sg-chip:hover {
+    background: var(--light-gray);
+}
+
+.sg-chip[aria-current="page"] {
+    background: var(--light-blue);
+    border-color: var(--secondary-blue);
+    color: var(--primary-blue);
+}
+
+.sg-chip .sg-count {
+    margin-left: 0;
+}
+
+.sg-chip[aria-current="page"] .sg-count {
+    background: var(--white);
+}
+
+/* Same colour family as the status badges */
+.sg-dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.sg-dot-in_progress {
+    background: #f59e0b;
+}
+
+.sg-dot-draft {
+    background: #9aa4b1;
+}
+
+.sg-dot-completed {
+    background: var(--success-green);
+}
+
 .sg-table .sg-progress {
     width: 120px;
     margin-bottom: 0.25rem;
