@@ -6,9 +6,11 @@ from django.db.models import Q
 from django.utils import timezone
 
 from ..models import File, Folder, FolderPermission
-from ..utils import normalize_path
+from ..utils import MAX_NAME_LENGTH, check_name_length, normalize_path
 
 NAME_TAKEN = 'A file/folder with that name already exists'
+ALREADY_THERE = 'It is already in that folder'
+INTO_ITSELF = 'A folder cannot be moved into itself or one of its subfolders'
 
 
 def get_root():
@@ -79,7 +81,15 @@ def name_taken(folder, name):
     )
 
 
+def numbered_name(base, ext, counter):
+    """base_1.ext, base_2.ext…, with base cut short where the number would
+    make the name too long, as Windows does when copying."""
+    suffix = f'_{counter}{ext}'
+    return base[: max(MAX_NAME_LENGTH - len(suffix), 0)] + suffix
+
+
 def create_folder(parent, name, user):
+    check_name_length(name)
     if name_taken(parent, name):
         raise ValidationError('A folder with that name already exists')
     try:
@@ -92,6 +102,7 @@ def create_folder(parent, name, user):
 
 def upload_file(folder, uploaded, name, user):
     """Save an upload into folder; a name in use gets a _1, _2… suffix."""
+    check_name_length(name)  # Before anything is written to disk
     file = File(folder=folder, created_by=user)
     # Named before writing, so a half-written file can be found and removed:
     # Django leaves one behind when the write fails
@@ -112,7 +123,7 @@ def upload_file(folder, uploaded, name, user):
                     # Only a concurrent upload taking the name is retried
                     if not name_taken(folder, candidate):
                         raise
-            candidate = f'{base}_{counter}{ext}'
+            candidate = numbered_name(base, ext, counter)
             counter += 1
     except Exception:
         file.file.storage.delete(stored_name)  # Don't leave an orphaned file on disk
@@ -120,6 +131,7 @@ def upload_file(folder, uploaded, name, user):
 
 
 def rename_folder(folder, new_name):
+    check_name_length(new_name)
     # A case-only change is only "taken" by the folder itself
     if new_name.lower() != folder.name.lower() and name_taken(folder.parent, new_name):
         raise ValidationError(NAME_TAKEN)
@@ -129,20 +141,25 @@ def rename_folder(folder, new_name):
     try:
         with transaction.atomic():
             folder.save()
-            # Permissions are stored as paths, so they follow the rename
-            permissions = list(
-                FolderPermission.objects.select_for_update().filter(
-                    Q(folder_path=old_path) | Q(folder_path__startswith=old_path + '/')
-                )
-            )
-            for perm in permissions:
-                perm.folder_path = new_path + perm.folder_path[len(old_path) :]
-            FolderPermission.objects.bulk_update(permissions, ['folder_path'])
+            _move_permissions(old_path, new_path)
     except IntegrityError:
         raise ValidationError(NAME_TAKEN)
 
 
+def _move_permissions(old_path, new_path):
+    """Permissions are stored as paths, so they follow a renamed or moved folder."""
+    permissions = list(
+        FolderPermission.objects.select_for_update().filter(
+            Q(folder_path=old_path) | Q(folder_path__startswith=old_path + '/')
+        )
+    )
+    for perm in permissions:
+        perm.folder_path = new_path + perm.folder_path[len(old_path) :]
+    FolderPermission.objects.bulk_update(permissions, ['folder_path'])
+
+
 def rename_file(file, new_name):
+    check_name_length(new_name)
     # A case-only change is only "taken" by the file itself
     if new_name.lower() != file.name.lower() and name_taken(file.folder, new_name):
         raise ValidationError(NAME_TAKEN)
@@ -152,6 +169,65 @@ def rename_file(file, new_name):
             file.save()
     except IntegrityError:
         raise ValidationError(NAME_TAKEN)
+
+
+def move_file(file, dest, name=None, dry_run=False):
+    """Move file into dest under name, by default its own; a name in use there
+    gets a _1, _2… suffix, as on upload. Undo passes the name it had before.
+    With dry_run nothing is saved, so the name it would get can be shown first.
+
+    Returns the name it was moved under."""
+    if file.folder_id == dest.id:
+        raise ValidationError(ALREADY_THERE)
+    with transaction.atomic():
+        _move(file, dest, name or file.name)
+        if dry_run:
+            transaction.set_rollback(True)
+    return file.name
+
+
+def move_folder(folder, dest, name=None, dry_run=False):
+    """Move folder, with everything in it, into dest; name, dry_run and the
+    result as for move_file. Its permissions follow it, as on a rename."""
+    if folder.parent_id == dest.id:
+        raise ValidationError(ALREADY_THERE)
+    with transaction.atomic():
+        # One folder move at a time: two crossing moves (A into B while B goes
+        # into A) would both pass the check below and leave a loop cut off
+        # from the root, which get_path() would follow forever
+        Folder.objects.select_for_update().get(parent=None)
+        if dest.id in get_subtree_ids(folder):
+            raise ValidationError(INTO_ITSELF)
+        old_path = get_path(folder)
+        _move(folder, dest, name or folder.name)
+        _move_permissions(old_path, get_path(folder))
+        if dry_run:
+            transaction.set_rollback(True)
+    return folder.name
+
+
+def _move(item, dest, name):
+    check_name_length(name)  # The name Undo asks for
+    is_folder = isinstance(item, Folder)
+    parent_field = 'parent' if is_folder else 'folder'
+    # A folder keeps its whole name: "v1.2" becomes "v1.2_1", not "v1_1.2"
+    base, ext = (name, '') if is_folder else posixpath.splitext(name)
+    candidate, counter = name, 1
+    while True:
+        if not name_taken(dest, candidate):
+            setattr(item, parent_field, dest)
+            item.name = candidate
+            try:
+                with transaction.atomic():
+                    # Not updated_at: moving doesn't change the file, as in Windows
+                    item.save(update_fields=[parent_field, 'name'])
+                return
+            except IntegrityError:
+                # Only a concurrent upload or move taking the name is retried
+                if not name_taken(dest, candidate):
+                    raise
+        candidate = numbered_name(base, ext, counter)
+        counter += 1
 
 
 def get_subtree_ids(folder):

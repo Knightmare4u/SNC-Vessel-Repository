@@ -21,6 +21,21 @@ RESERVED_NAMES = {
     *(f'LPT{i}' for i in range(1, 10)),
 }
 
+# Characters, not bytes: File.name and Folder.name hold 255, as Windows and
+# OneDrive count them
+MAX_NAME_LENGTH = 255
+NAME_TOO_LONG = f'Name is too long: {MAX_NAME_LENGTH} characters at most'
+
+# The longest each name is shown in a rename or move log entry
+LOG_NAME_LENGTH = 50
+
+
+def check_name_length(name):
+    """PostgreSQL turns a longer name into a server error and SQLite saves it,
+    so every name is checked before it is saved."""
+    if len(name) > MAX_NAME_LENGTH:
+        raise ValidationError(NAME_TOO_LONG)
+
 
 def normalize_path(path):
     """Return a canonical storage path: leading '/', no trailing '/', no '..'."""
@@ -42,8 +57,7 @@ def validate_name(name):
         )
     if name.split('.')[0].upper() in RESERVED_NAMES:
         raise ValidationError(f'"{name}" is a reserved name')
-    if len(name.encode('utf-8')) > 255:
-        raise ValidationError('Name is too long')
+    check_name_length(name)
 
 
 def to_url_path(path):
@@ -74,7 +88,9 @@ def get_user_permissions(user):
     ]
 
 
-def has_permission(user, folder_path, required_permission):
+def has_permission(user, folder_path, required_permission, permissions=None):
+    """permissions: the user's grants from get_user_permissions, passed when
+    checking many folders so they are read once."""
     if user.is_superuser:
         return True
 
@@ -87,7 +103,9 @@ def has_permission(user, folder_path, required_permission):
     best = 0
 
     # Permissions are additive: use the highest grant covering this folder
-    for perm in get_user_permissions(user):
+    if permissions is None:
+        permissions = get_user_permissions(user)
+    for perm in permissions:
         if folder.is_relative_to(normalize_path(perm['folder_path'])):
             best = max(best, PERMISSION_RANK[perm['permission']])
 
@@ -105,6 +123,20 @@ def log_activity(user, filename, filepath, activity_type, ip_address, file_size=
         ip_address=ip_address,
         file_size=file_size,
     )
+
+
+def name_change(old, new):
+    """'old → new' for the activity log. A name over LOG_NAME_LENGTH loses its
+    middle, so both ends, extension included, still show; the full paths go in
+    filepath."""
+    return f'{_shorten(old, LOG_NAME_LENGTH)} → {_shorten(new, LOG_NAME_LENGTH)}'
+
+
+def _shorten(name, size):
+    if len(name) <= size:
+        return name
+    head = (size - 1) // 2
+    return name[:head] + '…' + name[len(name) - (size - 1 - head) :]
 
 
 def display_name(user):

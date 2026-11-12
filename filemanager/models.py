@@ -11,15 +11,14 @@ from django_cleanup import cleanup
 
 
 class FolderPermission(models.Model):
-    PERMISSION_CHOICES = [
-        ('read', 'Read Only'),
-        ('write', 'Read and Write'),
-        ('admin', 'Full Access'),
-    ]
+    class Permission(models.TextChoices):
+        READ = 'read', 'Read Only'
+        WRITE = 'write', 'Read and Write'
+        ADMIN = 'admin', 'Full Access'
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     folder_path = models.CharField(max_length=1000)
-    permission = models.CharField(max_length=10, choices=PERMISSION_CHOICES)
+    permission = models.CharField(max_length=10, choices=Permission)
 
     class Meta:
         unique_together = ['user', 'folder_path']
@@ -47,19 +46,19 @@ class UserProfile(models.Model):
 
 
 class FileActivity(models.Model):
-    ACTIVITY_CHOICES = [
-        ('upload', 'File Upload'),
-        ('download', 'File Download'),
-        ('delete', 'File Delete'),
-        ('view', 'File View'),
-        ('rename', 'File Rename'),
-        ('sign', 'File Signed'),
-    ]
+    class ActivityType(models.TextChoices):
+        UPLOAD = 'upload', 'File Upload'
+        DOWNLOAD = 'download', 'File Download'
+        DELETE = 'delete', 'File Delete'
+        VIEW = 'view', 'File View'
+        RENAME = 'rename', 'File Rename'
+        MOVE = 'move', 'File Move'
+        SIGN = 'sign', 'File Signed'
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     filename = models.CharField(max_length=255)
     filepath = models.CharField(max_length=1000)
-    activity_type = models.CharField(max_length=10, choices=ACTIVITY_CHOICES)
+    activity_type = models.CharField(max_length=10, choices=ActivityType)
     timestamp = models.DateTimeField(auto_now_add=True)
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     file_size = models.BigIntegerField(null=True, blank=True)
