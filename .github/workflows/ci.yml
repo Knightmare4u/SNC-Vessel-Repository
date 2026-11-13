@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: read
+  # Lets dorny/test-reporter publish the test results as a check
+  checks: write
 
 jobs:
   test:
@@ -48,9 +50,14 @@ jobs:
           python-version: '3.11'
           cache: pip
 
+      # setup-python marks every logged traceback as an error, even ones tests
+      # cause on purpose; dorny/test-reporter marks the real failures instead
+      - name: Turn off Python traceback annotations
+        run: echo "::remove-matcher owner=python::"
+
       - name: Install dependencies
-        # coverage is only needed here, so it stays out of requirements.txt
-        run: pip install -r requirements.txt coverage==7.17.3
+        # These two are only needed here, so they stay out of requirements.txt
+        run: pip install -r requirements.txt coverage==7.17.3 unittest-xml-reporting==4.0.0
 
       - name: Check for missing migrations
         run: python manage.py makemigrations --check
@@ -59,9 +66,24 @@ jobs:
         id: tests
         # Explicit bash turns on pipefail, so a test failure is not hidden by tee
         shell: bash
-        run: coverage run --source=. manage.py test 2>&1 | tee test-output.txt
+        env:
+          # Unbuffered, so lines reach test-output.txt in the order they were printed
+          PYTHONUNBUFFERED: '1'
+        # XMLTestRunner also writes the results as JUnit XML, one TEST-*.xml per test class
+        run: >-
+          coverage run --source=. manage.py test
+          --testrunner xmlrunner.extra.djangotestrunner.XMLTestRunner
+          2>&1 | tee test-output.txt
 
       # The report steps also run when tests fail, but not when they never ran
+      - name: Publish test results
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        uses: dorny/test-reporter@v3
+        with:
+          name: Test results
+          path: TEST-*.xml
+          reporter: python-xunit
+
       - name: Build coverage report
         if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
         run: |
@@ -76,3 +98,4 @@ jobs:
           path: |
             htmlcov/
             test-output.txt
+            TEST-*.xml
