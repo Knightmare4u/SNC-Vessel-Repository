@@ -93,6 +93,6 @@ class StorageTestCase(TestCase):
         return self.client.post(url, json.dumps(data), content_type='application/json')
 
     def read_response(self, response):
-        content = b''.join(response.streaming_content)
-        response.close()
-        return content
+        # Reading to the end closes the response; closing it again would also
+        # close the test's database connection on Postgres
+        return b''.join(response.streaming_content)
