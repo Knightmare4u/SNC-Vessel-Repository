@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # Same version as docker-compose.yml
+        image: postgres:16
+        env:
+          POSTGRES_DB: snc
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Throwaway key for tests only; the real one stays in .env
+      SECRET_KEY: ci-only-not-a-real-secret
+      # DEBUG=False makes settings.py use Postgres, as in production
+      DEBUG: 'False'
+      DB_NAME: snc
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: localhost
+      DB_PORT: 5432
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        # coverage is only needed here, so it stays out of requirements.txt
+        run: pip install -r requirements.txt coverage==7.17.3
+
+      - name: Check for missing migrations
+        run: python manage.py makemigrations --check
+
+      - name: Run tests
+        id: tests
+        # Explicit bash turns on pipefail, so a test failure is not hidden by tee
+        shell: bash
+        run: coverage run --source=. manage.py test 2>&1 | tee test-output.txt
+
+      # The report steps also run when tests fail, but not when they never ran
+      - name: Build coverage report
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        run: |
+          coverage html
+          coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test report
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-report
+          path: |
+            htmlcov/
+            test-output.txt
