@@ -1,0 +1,17 @@
+# Coverage should describe the application code. Tests and migrations are run
+# in full by the test suite itself, so counting them would push the total up.
+# The server start-up files and the one-off create_users.py never run in tests.
+[run]
+# Measure the whole project, so files no test imports still show up at 0%
+source = .
+omit =
+    */tests/*
+    */migrations/*
+    run_waitress.py
+    create_users.py
+    oakmaritime/asgi.py
+    oakmaritime/wsgi.py
+
+[report]
+# Leave the empty __init__.py files out of the table
+skip_empty = True
