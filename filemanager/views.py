@@ -782,6 +782,9 @@ def folder_tree(request):
     permissions = get_user_permissions(request.user)
     folders = []
     for path in sorted(filesystem.get_folder_paths().values()):
+        # Nothing moves into the archive, so it isn't listed, even for superusers
+        if is_in_archive(get_storage_path(path)):
+            continue
         if has_permission(request.user, path, 'read', permissions):
             writable = has_permission(request.user, path, 'write', permissions)
             folders.append({'path': path, 'writable': writable})
@@ -790,74 +793,83 @@ def folder_tree(request):
 
 @login_required
 @require_POST
-def move_file(request):
-    """Move a file or folder into another folder; Undo moves it back under the
-    name it had. With dry_run nothing is saved: the dialog shows the name it
-    would get."""
+def move_items(request):
+    """Move files and folders into another folder, all or none; Undo moves
+    them back under the names they had. With dry_run nothing is saved: the
+    dialog shows the names they would get."""
     try:
         data = json.loads(request.body)
-        path, destination = data['path'], data['destination']
-        name = data.get('name')  # Undo puts back the name it had
-        if not isinstance(path, str) or not isinstance(destination, str):
+        destination = data['destination']
+        # name: Undo puts back the name it had
+        moves = [(move['path'], move.get('name')) for move in data['items']]
+        if not isinstance(destination, str) or not moves:
             raise TypeError
-        if name is not None and not isinstance(name, str):
-            raise TypeError
+        for path, name in moves:
+            if not isinstance(path, str):
+                raise TypeError
+            if name is not None and not isinstance(name, str):
+                raise TypeError
     except (json.JSONDecodeError, KeyError, TypeError):
         return JsonResponse({'error': 'Invalid request'}, status=400)
-    path, destination = normalize_path(path), normalize_path(destination)
+    destination = normalize_path(destination)
+    moves = [(normalize_path(path), name) for path, name in moves]
 
-    if path == '/':
-        return JsonResponse({'error': 'Cannot move the root folder'}, status=400)
     # Taking it out of a folder is like deleting it there (admin); putting it
     # in is like an upload (write). Windows likewise asks for delete and write.
-    if not (
-        has_permission(request.user, posixpath.dirname(path), 'admin')
-        and has_permission(request.user, destination, 'write')
-    ):
+    permissions = get_user_permissions(request.user)
+    if not has_permission(request.user, destination, 'write', permissions):
         return JsonResponse({'error': 'Permission denied'}, status=403)
-    if is_in_archive(get_storage_path(path)) or is_in_archive(
-        get_storage_path(destination)
-    ):
+    if is_in_archive(get_storage_path(destination)):
         return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
-    if name is not None:
-        try:
-            validate_name(name)
-        except ValidationError as e:
-            return JsonResponse({'error': e.messages[0]}, status=400)
-    item = filesystem.resolve(path)
+    for path, name in moves:
+        if path == '/':
+            return JsonResponse({'error': 'Cannot move the root folder'}, status=400)
+        if not has_permission(
+            request.user, posixpath.dirname(path), 'admin', permissions
+        ):
+            return JsonResponse({'error': 'Permission denied'}, status=403)
+        if is_in_archive(get_storage_path(path)):
+            return JsonResponse({'error': ARCHIVE_READ_ONLY}, status=403)
+        if name is not None:
+            try:
+                validate_name(name)
+            except ValidationError as e:
+                return JsonResponse({'error': e.messages[0]}, status=400)
+    items = [filesystem.resolve(path) for path, _ in moves]
     dest = filesystem.resolve_folder(destination)
-    if item is None or dest is None:
+    if dest is None or any(item is None for item in items):
         return JsonResponse({'error': 'File/folder not found'}, status=404)
 
     dry_run = bool(data.get('dry_run'))
-    old_name = item.name
+    old_names = [item.name for item in items]
+    names = [name for _, name in moves]
     try:
-        if isinstance(item, Folder):
-            new_name = filesystem.move_folder(item, dest, name, dry_run)
-        else:
-            new_name = filesystem.move_file(item, dest, name, dry_run)
+        new_names = filesystem.move_items(list(zip(items, names)), dest, dry_run)
     except ValidationError as e:
         return JsonResponse({'error': e.messages[0]}, status=400)
-    new_path = posixpath.join(destination, new_name)
-    moved = {
-        'old_path': to_url_path(path),
-        'path': to_url_path(new_path),
-        'old_name': old_name,
-        'name': new_name,
-    }
+    moved = [
+        {
+            'old_path': to_url_path(path),
+            'path': to_url_path(posixpath.join(destination, new_name)),
+            'old_name': old_name,
+            'name': new_name,
+        }
+        for (path, _), old_name, new_name in zip(moves, old_names, new_names)
+    ]
     if dry_run:
-        return JsonResponse(moved)
+        return JsonResponse({'moved': moved})
 
-    log_activity(
-        request.user,
-        name_change(old_name, new_name) if new_name != old_name else new_name,
-        f'{path} → {new_path}',
-        'move',
-        request.META.get('REMOTE_ADDR'),
-    )
-    # Undo takes it back out of destination, so it needs admin there
-    can_undo = has_permission(request.user, destination, 'admin')
-    return JsonResponse({'success': True, **moved, 'can_undo': can_undo})
+    for (path, _), old_name, new_name in zip(moves, old_names, new_names):
+        log_activity(
+            request.user,
+            name_change(old_name, new_name) if new_name != old_name else new_name,
+            f'{path} → {posixpath.join(destination, new_name)}',
+            'move',
+            request.META.get('REMOTE_ADDR'),
+        )
+    # Undo takes them back out of destination, so it needs admin there
+    can_undo = has_permission(request.user, destination, 'admin', permissions)
+    return JsonResponse({'success': True, 'moved': moved, 'can_undo': can_undo})
 
 
 @login_required

@@ -44,7 +44,7 @@ urlpatterns = [
         name='upload_progress',
     ),
     path('rename/', views.rename_file, name='rename_file'),
-    path('move/', views.move_file, name='move_file'),
+    path('move/', views.move_items, name='move_items'),
     path('folders/', views.folder_tree, name='folder_tree'),
     path('delete/', views.delete_file, name='delete_file'),
     path('search/', views.search_files, name='search_files'),

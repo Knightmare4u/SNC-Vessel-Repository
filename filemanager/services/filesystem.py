@@ -171,24 +171,40 @@ def rename_file(file, new_name):
         raise ValidationError(NAME_TAKEN)
 
 
-def move_file(file, dest, name=None, dry_run=False):
+def move_items(moves, dest, dry_run=False):
+    """Move files and folders into dest, all or none: if one can't go, none do
+    and the error names it. moves holds (item, name) pairs, name as for
+    move_file. With dry_run nothing is saved, so the names they would get can
+    be shown first.
+
+    Returns the names they were moved under, in order."""
+    names = []
+    with transaction.atomic():
+        for item, name in moves:
+            move = move_folder if isinstance(item, Folder) else move_file
+            try:
+                names.append(move(item, dest, name))
+            except ValidationError as e:
+                raise ValidationError(f'{e.messages[0]}: {item.name}')
+        if dry_run:
+            transaction.set_rollback(True)
+    return names
+
+
+def move_file(file, dest, name=None):
     """Move file into dest under name, by default its own; a name in use there
     gets a _1, _2… suffix, as on upload. Undo passes the name it had before.
-    With dry_run nothing is saved, so the name it would get can be shown first.
 
     Returns the name it was moved under."""
     if file.folder_id == dest.id:
         raise ValidationError(ALREADY_THERE)
-    with transaction.atomic():
-        _move(file, dest, name or file.name)
-        if dry_run:
-            transaction.set_rollback(True)
+    _move(file, dest, name or file.name)
     return file.name
 
 
-def move_folder(folder, dest, name=None, dry_run=False):
-    """Move folder, with everything in it, into dest; name, dry_run and the
-    result as for move_file. Its permissions follow it, as on a rename."""
+def move_folder(folder, dest, name=None):
+    """Move folder, with everything in it, into dest; name and the result as
+    for move_file. Its permissions follow it, as on a rename."""
     if folder.parent_id == dest.id:
         raise ValidationError(ALREADY_THERE)
     with transaction.atomic():
@@ -201,8 +217,6 @@ def move_folder(folder, dest, name=None, dry_run=False):
         old_path = get_path(folder)
         _move(folder, dest, name or folder.name)
         _move_permissions(old_path, get_path(folder))
-        if dry_run:
-            transaction.set_rollback(True)
     return folder.name
 
 

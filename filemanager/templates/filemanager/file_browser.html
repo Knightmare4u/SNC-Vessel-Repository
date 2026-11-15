@@ -299,6 +299,9 @@
 }
 .tr-row:hover { background: var(--light-gray); }
 .tr-row.sel { background: var(--light-blue); box-shadow: inset 3px 0 0 var(--secondary-blue); }
+/* The row the arrow keys are on; a mouse click shows no ring */
+.tr-row:focus { outline: none; }
+.tr-row:focus-visible { outline: 2px solid var(--secondary-blue); outline-offset: -2px; }
 /* Folders it can't go into: the reason shows when one is picked */
 .tr-row.off .tr-icon,
 .tr-row.off .tr-name { opacity: 0.5; }
@@ -313,6 +316,8 @@
 .tr-tag { flex: none; padding: 0.05rem 0.5rem; border-radius: 999px; background: #eef1f4; color: #596574; font-size: 0.72rem; white-space: nowrap; }
 .tr-empty { padding: 2rem 1rem; text-align: center; color: var(--gray); }
 .mv-foot { padding: 0.9rem 1.5rem 1.2rem; }
+/* Many items renamed on a batch move: the list scrolls, the tree keeps its room */
+#mvMsgs { max-height: 9rem; overflow-y: auto; }
 .mv-msg { margin-bottom: 0.75rem; padding: 0.55rem 0.75rem; border-radius: 6px; font-size: 0.85rem; line-height: 1.45; }
 .mv-msg.error { background: #fee2e2; color: #991b1b; }
 .mv-msg.info { background: #eff6ff; color: var(--primary-blue); }
@@ -418,6 +423,10 @@
     <div id="bulkActionBar" style="display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 999; padding: 0.75rem 1.5rem; background: var(--light-blue); border-bottom: 2px solid var(--secondary-blue); align-items: center; flex-wrap: wrap; gap: 1rem; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
         <span id="selectedCount" style="font-weight: 600; color: var(--primary-blue);"></span>
         <button class="btn btn-primary btn-sm" onclick="bulkDownload()">⬇️ Download Selected</button>
+        {% if can_delete and not in_archive %}
+        {# Moving them out needs admin here, as deleting does; hidden on search results #}
+        <button class="btn btn-primary btn-sm" id="bulkMoveBtn" onclick="bulkMove()">📂 Move Selected</button>
+        {% endif %}
         <button class="btn btn-secondary btn-sm" onclick="clearSelection()">Clear Selection</button>
     </div>
 
@@ -455,9 +464,12 @@
                     data-created="{{ item.created_at|date:'U' }}"
                     data-type="{{ item.type }}">
                     <td style="text-align: center;">
+                        {# The archive can't be moved, so it can't be selected either #}
+                        {% if not item.is_archive %}
                         <input type="checkbox" class="file-checkbox custom-checkbox"
                                data-filepath="{{ item.path }}"
                                data-filename="{{ item.name }}">
+                        {% endif %}
                     </td>
                     <td class="fb-name-col">
                         <div style="display: flex; align-items: center; gap: 0.75rem;">
@@ -662,7 +674,7 @@
             <button type="button" class="mv-close" data-move-close aria-label="Close">&times;</button>
         </div>
         <div class="mv-search"><input type="search" id="mvSearch" placeholder="Search folders..."></div>
-        <div class="mv-tree" id="mvTree" role="tree"></div>
+        <div class="mv-tree" id="mvTree" role="tree" aria-label="Folders"></div>
         <div class="mv-foot">
             <div id="mvMsgs"></div>
             <div class="mv-foot-row">
@@ -792,7 +804,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const fileName = btn.dataset.filename;
             deleteFile(filePath, fileName);
         } else if (btn.classList.contains('move-btn')) {
-            openMoveDialog({ path: btn.dataset.filepath, name: btn.dataset.filename, type: btn.dataset.type });
+            openMoveDialog([{ path: btn.dataset.filepath, name: btn.dataset.filename, type: btn.dataset.type }]);
         }
     });
 
@@ -1296,6 +1308,8 @@ function displaySearchResults(results, query) {
     // Hide upload sections during search
     if (uploadZone) uploadZone.style.display = 'none';
     if (uploadProgress) uploadProgress.style.display = 'none';
+    // Results come from many folders; clearing the search reloads the page
+    document.getElementById('bulkMoveBtn')?.remove();
 
     if (results.length === 0) {
         if (thead) thead.style.display = 'none';
@@ -1520,6 +1534,15 @@ function bulkDownload() {
     downloadAsZip(paths);
 }
 
+function bulkMove() {
+    const items = Array.from(document.querySelectorAll('.file-checkbox:checked')).map(cb => ({
+        path: cb.dataset.filepath,
+        name: cb.dataset.filename,
+        type: cb.closest('tr').dataset.type,
+    }));
+    if (items.length > 0) openMoveDialog(items);
+}
+
 // Zips the given files/folders on the server (a single folder too)
 function downloadAsZip(paths) {
     // Show loading overlay
@@ -1588,11 +1611,12 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
-// ---- Move: a dialog with a folder tree to pick where a file or folder goes ----
-const MOVE_URL = "{% url 'move_file' %}";
+// ---- Move: a dialog with a folder tree to pick where files and folders go ----
+const MOVE_URL = "{% url 'move_items' %}";
 const FOLDER_TREE_URL = "{% url 'folder_tree' %}";
 const MOVE_TOAST_KEY = 'fileBrowserMoveToast';
-const moveState = { item: null, nodes: null, roots: [], dest: null, open: new Set(), query: '', preview: null, check: 0 };
+// focus: the path of the row the arrow keys are on
+const moveState = { items: [], from: null, nodes: null, roots: [], dest: null, open: new Set(), focus: null, query: '', preview: null, check: 0 };
 
 // Paths as the server keeps them: '/' for the root, '/A/B' below it
 const toPath = (urlPath) => '/' + urlPath.replace(/^\/+/, '');
@@ -1608,15 +1632,18 @@ function ancestorPaths(path) {
     return paths;
 }
 
-function openMoveDialog(item) {
-    moveState.item = { ...item, path: toPath(item.path) };
+// items: [{ path, name, type }], all from the folder on screen
+function openMoveDialog(items) {
+    moveState.items = items.map(item => ({ ...item, path: toPath(item.path) }));
     moveState.dest = null;
     moveState.preview = null;
     moveState.query = '';
-    const from = parentPath(moveState.item.path);
-    // Opened down to where it is now
+    const from = moveState.from = parentPath(moveState.items[0].path);
+    // Opened down to where they are now, which is also where Tab lands in the tree
     moveState.open = new Set(ancestorPaths(from));
-    document.getElementById('mvTitle').textContent = `Move "${item.name}"`;
+    moveState.focus = from;
+    document.getElementById('mvTitle').textContent =
+        items.length === 1 ? `Move "${items[0].name}"` : `Move ${items.length} items`;
     document.getElementById('mvFrom').textContent = pathLabel(from);
     document.getElementById('mvSearch').value = '';
     document.getElementById('moveModal').hidden = false;
@@ -1642,7 +1669,7 @@ async function readJson(response) {
     return data;
 }
 
-// move: { path, destination, name (Undo only) }
+// move: { items: [{ path, name (Undo only) }], destination }
 function postMove(move, dryRun = false) {
     return fetch(MOVE_URL, {
         method: 'POST',
@@ -1686,16 +1713,19 @@ function buildFolderTree(folders) {
 
 // Folders it can't go into are marked up front; the server checks again
 function moveNodeState(node) {
-    const item = moveState.item;
-    if (item.type === 'folder' && (node.path === item.path || node.path.startsWith(item.path + '/'))) {
-        return { tag: 'Moving', sealed: true, error: `You can't move "${item.name}" into itself or one of its subfolders.` };
+    const { items, from } = moveState;
+    const moving = items.find(item =>
+        item.type === 'folder' && (node.path === item.path || node.path.startsWith(item.path + '/')));
+    if (moving) {
+        return { tag: 'Moving', sealed: true, error: `You can't move "${moving.name}" into itself or one of its subfolders.` };
     }
-    // Where it is now: greyed out and can't be picked, with no message
-    if (parentPath(item.path) === node.path) {
+    // Where they are now: greyed out and can't be picked, with no message
+    if (from === node.path) {
         return { tag: 'Current', current: true };
     }
     if (!node.writable) {
-        return { tag: '🔒 Read only', error: `You have read-only access to ${node.name}, so you can't move it there.` };
+        const them = items.length === 1 ? 'it' : 'them';
+        return { tag: '🔒 Read only', error: `You have read-only access to ${node.name}, so you can't move ${them} there.` };
     }
     return {};
 }
@@ -1706,11 +1736,12 @@ function moveTreeRow(node, depth, withPath = false) {
     const open = kids.length > 0 && moveState.open.has(node.path);
     const selected = moveState.dest === node;
     const toggle = kids.length
-        ? `<button type="button" class="tr-toggle" data-toggle="${escapeHtml(node.path)}" aria-label="${open ? 'Collapse' : 'Expand'}">${open ? '▾' : '▸'}</button>`
+        // Out of the Tab order: the keyboard opens folders with → and ←
+        ? `<button type="button" class="tr-toggle" tabindex="-1" data-toggle="${escapeHtml(node.path)}" aria-label="${open ? 'Collapse' : 'Expand'}">${open ? '▾' : '▸'}</button>`
         : '<span class="tr-spacer"></span>';
     const path = withPath ? `<span class="tr-path">${escapeHtml(pathLabel(parentPath(node.path)))}</span>` : '';
     let html = `<div class="tr-row${selected ? ' sel' : ''}${state.tag ? ' off' : ''}${state.current ? ' current' : ''}" style="--depth: ${depth}"
-            data-path="${escapeHtml(node.path)}" role="treeitem" aria-selected="${selected}"${state.current ? ' aria-disabled="true"' : ''}${kids.length ? ` aria-expanded="${open}"` : ''}>
+            data-path="${escapeHtml(node.path)}" role="treeitem" tabindex="-1" aria-level="${depth + 1}" aria-selected="${selected}"${state.current ? ' aria-disabled="true"' : ''}${kids.length ? ` aria-expanded="${open}"` : ''}>
         ${toggle}<span class="tr-icon">${node.path === '/' ? '🏠' : '📁'}</span>
         <span class="tr-name">${escapeHtml(node.name)}${path}</span>${state.tag ? `<span class="tr-tag">${state.tag}</span>` : ''}
     </div>`;
@@ -1721,6 +1752,7 @@ function moveTreeRow(node, depth, withPath = false) {
 function renderMoveTree() {
     if (!moveState.nodes) return;
     const tree = document.getElementById('mvTree');
+    const hadFocus = tree.contains(document.activeElement);
     if (moveState.query) {
         const hits = [...moveState.nodes.values()]
             .filter(node => node.path !== '/' && node.name.toLowerCase().includes(moveState.query))
@@ -1731,6 +1763,19 @@ function renderMoveTree() {
         tree.innerHTML = moveState.roots.map(node => moveTreeRow(node, 0)).join('')
             || '<div class="tr-empty">You have no folders to move into.</div>';
     }
+    // Tab stops at one row only, the one last on (or the first); the arrow
+    // keys go on from there
+    const rows = [...tree.querySelectorAll('.tr-row')];
+    const row = rows.find(r => r.dataset.path === moveState.focus) || rows[0];
+    if (!row) return;
+    row.tabIndex = 0;
+    if (hadFocus) row.focus({ preventScroll: true });  // The rows were redrawn under it
+}
+
+function toggleMoveNode(path) {
+    if (moveState.open.has(path)) moveState.open.delete(path);
+    else moveState.open.add(path);
+    renderMoveTree();
 }
 
 function selectMoveDest(node) {
@@ -1746,7 +1791,7 @@ function selectMoveDest(node) {
     previewMove();
 }
 
-// Asks the server what moving there would do (dry run): the name it would get
+// Asks the server what moving there would do (dry run): the names they would get
 async function previewMove() {
     const node = moveState.dest;
     const check = ++moveState.check;
@@ -1756,7 +1801,8 @@ async function previewMove() {
     if (state.error) return;
     let preview;
     try {
-        preview = { moved: await postMove({ path: moveState.item.path, destination: node.path }, true) };
+        const items = moveState.items.map(item => ({ path: item.path }));
+        preview = { moved: (await postMove({ items, destination: node.path }, true)).moved };
     } catch (error) {
         preview = { error: error.message };
     }
@@ -1766,14 +1812,16 @@ async function previewMove() {
 }
 
 function renderMoveFoot() {
-    const { item, dest, preview } = moveState;
+    const { items, dest, preview } = moveState;
     const msgs = [];
     if (preview?.error) msgs.push(['error', '⛔ ' + preview.error]);
     const moved = preview?.moved;
-    if (moved && moved.name !== moved.old_name) {
-        const kind = item.type === 'folder' ? 'folder' : 'file';
-        msgs.push(['info', `ℹ️ ${dest.name} already has a ${kind} named "${moved.old_name}", so it will be moved as "${moved.name}".`]);
-    }
+    // In the same order as the items
+    moved?.forEach((m, i) => {
+        if (m.name === m.old_name) return;
+        const kind = items[i].type === 'folder' ? 'folder' : 'file';
+        msgs.push(['info', `ℹ️ ${dest.name} already has a ${kind} named "${m.old_name}", so it will be moved as "${m.name}".`]);
+    });
     document.getElementById('mvMsgs').innerHTML =
         msgs.map(([kind, text]) => `<div class="mv-msg ${kind}">${escapeHtml(text)}</div>`).join('');
     document.getElementById('mvDest').innerHTML =
@@ -1782,22 +1830,30 @@ function renderMoveFoot() {
 }
 
 async function submitMove() {
-    const { item, dest } = moveState;
+    const { items, from, dest } = moveState;
     document.getElementById('mvGo').disabled = true;
-    let moved;
+    let result;
     try {
-        moved = await postMove({ path: item.path, destination: dest.path });
+        result = await postMove({ items: items.map(item => ({ path: item.path })), destination: dest.path });
     } catch (error) {
         moveState.preview = { error: error.message };
         renderMoveFoot();
         return;
     }
-    let message = `Moved "${moved.old_name}" to ${dest.name}`;
-    if (moved.name !== moved.old_name) message += ` as "${moved.name}"`;
-    // Undo sends it back to its folder under its old name; it is only offered
-    // with admin where it went, as it takes it back out of there
-    const undo = moved.can_undo
-        ? { path: moved.path, destination: parentPath(toPath(moved.old_path)), name: moved.old_name }
+    const { moved } = result;
+    const renamed = moved.filter(m => m.name !== m.old_name);
+    let message;
+    if (moved.length === 1) {
+        message = `Moved "${moved[0].old_name}" to ${dest.name}`;
+        if (renamed.length) message += ` as "${moved[0].name}"`;
+    } else {
+        message = `Moved ${moved.length} items to ${dest.name}`;
+        if (renamed.length) message += ` (${renamed.map(m => `"${m.old_name}" as "${m.name}"`).join(', ')})`;
+    }
+    // Undo sends them all back to their folder under their old names; it is only
+    // offered with admin where they went, as it takes them back out of there
+    const undo = result.can_undo
+        ? { items: moved.map(m => ({ path: m.path, name: m.old_name })), destination: from }
         : null;
     reloadWithToast({ message, undo });
 }
@@ -1860,17 +1916,58 @@ document.addEventListener('DOMContentLoaded', function() {
     if (toast && toast.undo) showUndoToast(toast.message, () => undoMove(toast.undo));
     else if (toast) showToast(toast.message);
 
-    document.getElementById('mvTree').addEventListener('click', (e) => {
+    const mvTree = document.getElementById('mvTree');
+    mvTree.addEventListener('click', (e) => {
         const toggle = e.target.closest('[data-toggle]');
         if (toggle) {
-            const path = toggle.dataset.toggle;
-            if (moveState.open.has(path)) moveState.open.delete(path);
-            else moveState.open.add(path);
-            renderMoveTree();
+            toggleMoveNode(toggle.dataset.toggle);
             return;
         }
         const row = e.target.closest('.tr-row');
         if (row && !row.classList.contains('current')) selectMoveDest(moveState.nodes.get(row.dataset.path));
+    });
+    // Whichever row gets focus, by key or click, is the one Tab comes back to
+    mvTree.addEventListener('focusin', (e) => {
+        const row = e.target.closest('.tr-row');
+        if (!row) return;
+        moveState.focus = row.dataset.path;
+        mvTree.querySelectorAll('.tr-row[tabindex="0"]').forEach(r => { r.tabIndex = -1; });
+        row.tabIndex = 0;
+    });
+    // Keys as in a file manager's folder pane (the WAI-ARIA tree pattern)
+    mvTree.addEventListener('keydown', (e) => {
+        const row = e.target.closest('.tr-row');
+        if (!row) return;
+        const rows = [...mvTree.querySelectorAll('.tr-row')];
+        const i = rows.indexOf(row);
+        const expanded = row.getAttribute('aria-expanded');
+        let target;
+        switch (e.key) {
+            case 'ArrowDown': target = rows[i + 1]; break;
+            case 'ArrowUp': target = rows[i - 1]; break;
+            case 'Home': target = rows[0]; break;
+            case 'End': target = rows[rows.length - 1]; break;
+            case 'ArrowRight':
+                // Opens a closed folder; in an open one, goes to its first subfolder
+                if (expanded === 'false') toggleMoveNode(row.dataset.path);
+                else if (expanded === 'true') target = rows[i + 1];
+                break;
+            case 'ArrowLeft': {
+                // Closes an open folder; otherwise goes up to the folder above it
+                const level = Number(row.getAttribute('aria-level'));
+                if (expanded === 'true') toggleMoveNode(row.dataset.path);
+                else target = rows.slice(0, i).reverse().find(r => Number(r.getAttribute('aria-level')) < level);
+                break;
+            }
+            case 'Enter':
+            case ' ':
+                if (!row.classList.contains('current')) selectMoveDest(moveState.nodes.get(row.dataset.path));
+                break;
+            default:
+                return;
+        }
+        e.preventDefault();  // Also keeps Space and the arrows from scrolling the list
+        target?.focus();
     });
     document.getElementById('mvSearch').addEventListener('input', (e) => {
         moveState.query = e.target.value.trim().toLowerCase();
