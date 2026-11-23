@@ -539,9 +539,7 @@
 
 .sg-place-box {
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    padding: 0.3rem 0.6rem;
     font-size: 0.8rem;
 }
 
@@ -549,10 +547,29 @@
     border-top: 1px solid #eef2f6;
 }
 
-/* More specific than .sg-link, which comes later in this file */
+/* The whole row goes to its box; only the × is a button of its own. These are
+   more specific than .sg-link, which comes later in this file. */
+.sg-place-box .sg-link {
+    padding: 0.35rem 0.6rem;
+}
+
+.sg-place-box .sg-link:first-child {
+    flex: 1;
+    text-align: left;
+}
+
+/* The whole row, × included, turns the same grey as the + button beside Signature */
+.sg-place-box:hover {
+    background: var(--light-gray);
+}
+
 .sg-place-box .sg-link-remove {
     color: var(--gray);
     font-size: 0.95rem;
+}
+
+.sg-place-box .sg-link-remove:hover {
+    color: #313131;
 }
 
 /* The shared comment card's note on who writes in it */
