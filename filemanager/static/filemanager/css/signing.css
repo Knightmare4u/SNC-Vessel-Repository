@@ -511,6 +511,50 @@
     font-size: 0.8rem;
 }
 
+/* A signature button and its + side by side, as one control on its own row */
+.sg-split {
+    display: flex;
+    flex: 1 1 100%;
+}
+
+.sg-place-actions .sg-split .btn:first-child {
+    border-radius: 5px 0 0 5px;
+}
+
+.sg-place-actions .sg-split .btn:last-child {
+    flex: none;
+    padding: 0.3rem 0.7rem;
+    border-left: 0;
+    border-radius: 0 5px 5px 0;
+    font-weight: 700;
+}
+
+/* The open list of a signer's signature boxes, under the button */
+.sg-place-boxes {
+    flex: 1 1 100%;
+    border: 1px solid #dfe4ea;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.sg-place-box {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.3rem 0.6rem;
+    font-size: 0.8rem;
+}
+
+.sg-place-box + .sg-place-box {
+    border-top: 1px solid #eef2f6;
+}
+
+/* More specific than .sg-link, which comes later in this file */
+.sg-place-box .sg-link-remove {
+    color: var(--gray);
+    font-size: 0.95rem;
+}
+
 /* The shared comment card's note on who writes in it */
 .sg-place-route {
     margin-top: 0.4rem;

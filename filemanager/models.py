@@ -311,9 +311,11 @@ class SigningField(models.Model):
 
     class Meta:
         constraints = [
+            # A signer may sign in several places; their other boxes are one each
             models.UniqueConstraint(
                 fields=['signer', 'field_type'],
-                name='unique_signer_field_type',
+                condition=~models.Q(field_type='signature'),
+                name='unique_signer_field_type_except_signature',
             ),
         ]
 

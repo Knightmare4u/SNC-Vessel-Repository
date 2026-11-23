@@ -12,7 +12,7 @@
     <aside class="card sg-place-side">
         <h2>Place signatures</h2>
         <p class="sg-muted">{{ signing_request.filename }}</p>
-        <p class="sg-mt">Drag each box to where that person signs; drag the corner to resize. Date and comment boxes are optional.</p>
+        <p class="sg-mt">Drag each box to where that person signs; drag the corner to resize. Press + to have someone sign in more than one place. Date and comment boxes are optional.</p>
 
         {% for error in form.non_field_errors %}<div class="alert alert-error sg-mt">{{ error }}</div>{% endfor %}
         {% for error in form.boxes.errors %}<div class="alert alert-error sg-mt">{{ error }}</div>{% endfor %}
@@ -88,6 +88,14 @@ const colorOf = (signerId) => COLORS[signers.findIndex((s) => s.id === signerId)
 const findBox = (signerId, type) => pagesEl.querySelector(type === SHARED
     ? `[data-box][data-type="${SHARED}"]`
     : `[data-box][data-signer="${signerId}"][data-type="${type}"]`);
+const pageOf = (box) => Number(box.parentElement.dataset.page);
+// A signer's boxes of one type in document order: by page, then top to bottom
+const boxesOf = (signerId, type) =>
+    [...pagesEl.querySelectorAll(`[data-box][data-signer="${signerId}"][data-type="${type}"]`)]
+        .sort((a, b) => pageOf(a) - pageOf(b) || Number(a.dataset.y) - Number(b.dataset.y));
+// Boxes are numbered so the sidebar's list can point at one
+let nextBoxId = 1;
+const boxById = (id) => pagesEl.querySelector(`[data-box][data-id="${id}"]`);
 // "✍ Signature", or "✍ Signature: page 2 ↗" once the box is placed
 const buttonText = (type, box) =>
     `${ICONS[type]} ${BUTTON_LABELS[type]}${box ? `: page ${box.parentElement.dataset.page} ↗` : ''}`;
@@ -106,6 +114,7 @@ function addBox(signerId, type, place) {
     const box = document.createElement('div');
     box.className = 'sg-box';
     box.dataset.box = '';
+    box.dataset.id = nextBoxId++;
     box.dataset.type = type;
     box.style.setProperty('--box-color', type === SHARED ? SHARED_COLOR : colorOf(signerId));
     box.innerHTML = `<span class="sg-box-label"><b></b><small></small></span>
@@ -123,17 +132,70 @@ function addBox(signerId, type, place) {
     return box;
 }
 
-// New boxes go in the middle of the page currently in view
-function placeInView(type) {
+// New boxes go in the middle of the page currently in view. Another signature box
+// for the same person goes below theirs already there, not on top of them.
+function placeInView(type, signerId) {
     const middle = window.innerHeight / 2;
     const pageEl = pageEls.find((el) => el.getBoundingClientRect().bottom > middle) || pageEls[0];
+    const page = Number(pageEl.dataset.page);
     const { width, height } = SIZES[type];
-    return { page: Number(pageEl.dataset.page), x: (1 - width) / 2, y: (1 - height) / 2, width, height };
+    const already = boxesOf(signerId, type).filter((box) => pageOf(box) === page).length;
+    const y = Math.min((1 - height) / 2 + already * (height + 0.02), 1 - height);
+    return { page, x: (1 - width) / 2, y, width, height };
 }
 
 // ---- Sidebar ---------------------------------------------------------------
 // The card last clicked is highlighted: a signer's id, or SHARED
 let selectedId = null;
+// Signers whose list of signature boxes is open
+const expanded = new Set();
+
+function sidebarButton(text, data) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn btn-outline btn-sm';
+    button.textContent = text;
+    Object.assign(button.dataset, data);
+    return button;
+}
+
+// A signer may sign in several places. With no box, the button adds the first.
+// With one, it goes to it as the other buttons do, and + adds another. With
+// more, ▾ opens the list of them, each one a click away.
+function signatureButtons(signerId) {
+    const boxes = boxesOf(signerId, 'signature');
+    if (!boxes.length) return [sidebarButton(buttonText('signature', null), { type: 'signature' })];
+
+    const many = boxes.length > 1;
+    const open = many && expanded.has(signerId);
+    const main = many
+        ? sidebarButton(`${ICONS.signature} ${LABELS.signature}: ${boxes.length} boxes ${open ? '▴' : '▾'}`, { toggle: '' })
+        : sidebarButton(buttonText('signature', boxes[0]), { goto: boxes[0].dataset.id });
+    if (many) main.setAttribute('aria-expanded', String(open));
+    const add = sidebarButton('+', { add: 'signature' });
+    add.title = 'Add another signature box';
+    add.setAttribute('aria-label', 'Add another signature box');
+    const split = document.createElement('div');
+    split.className = 'sg-split';
+    split.append(main, add);
+    if (!open) return [split];
+
+    const list = document.createElement('div');
+    list.className = 'sg-place-boxes';
+    boxes.forEach((box, i) => {
+        const item = document.createElement('div');
+        item.className = 'sg-place-box';
+        const go = sidebarButton(`${i + 1}. page ${pageOf(box)} ↗`, { goto: box.dataset.id });
+        go.className = 'sg-link';
+        const remove = sidebarButton('×', { remove: box.dataset.id });
+        remove.className = 'sg-link sg-link-remove';
+        remove.title = 'Remove';
+        remove.setAttribute('aria-label', 'Remove box');
+        item.append(go, remove);
+        list.appendChild(item);
+    });
+    return [split, list];
+}
 
 function renderSidebar() {
     const shared = findBox(null, SHARED);
@@ -154,7 +216,8 @@ function renderSidebar() {
         row.querySelector('.sg-place-order').textContent = signer.order;
         row.querySelector('.sg-place-name').textContent = signer.name;
         const actions = row.querySelector('.sg-place-actions');
-        ['signature', 'date', 'comment'].forEach((type) => {
+        actions.append(...signatureButtons(signer.id));
+        ['date', 'comment'].forEach((type) => {
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'btn btn-outline btn-sm';
@@ -189,10 +252,23 @@ listEl.addEventListener('click', (event) => {
     const row = event.target.closest('.sg-place-signer');
     if (!row || !pageEls.length) return;
     selectedId = Number(row.dataset.signer);
-    const button = event.target.closest('button[data-type]');
+    const button = event.target.closest('button');
     if (button && !button.disabled) {
-        const type = button.dataset.type;
-        showBox(findBox(selectedId, type) || addBox(selectedId, type, placeInView(type)));
+        const { type, add, goto, remove } = button.dataset;
+        if (type) {
+            showBox(findBox(selectedId, type) || addBox(selectedId, type, placeInView(type, selectedId)));
+        } else if (add) {
+            showBox(addBox(selectedId, add, placeInView(add, selectedId)));
+            // There are now at least two: open their list so the new one shows in it
+            expanded.add(selectedId);
+        } else if (goto) {
+            showBox(boxById(goto));
+        } else if (remove) {
+            boxById(remove).remove();
+        } else if ('toggle' in button.dataset) {
+            if (expanded.has(selectedId)) expanded.delete(selectedId);
+            else expanded.add(selectedId);
+        }
     }
     renderSidebar();
 });
@@ -201,7 +277,7 @@ sharedEl.addEventListener('click', (event) => {
     if (!pageEls.length) return;
     selectedId = SHARED;
     if (event.target.closest('button:enabled')) {
-        showBox(findBox(null, SHARED) || addBox(null, SHARED, placeInView(SHARED)));
+        showBox(findBox(null, SHARED) || addBox(null, SHARED, placeInView(SHARED, null)));
     }
     renderSidebar();
 });

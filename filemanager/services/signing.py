@@ -381,11 +381,11 @@ def save_fields(signing_request, fields):
             )
         except (KeyError, TypeError, ValueError):
             raise ValidationError('Invalid signature box.')
-        # One box of each type per signer, and one shared comment box
+        # A signer may have several signature boxes but one box of each other
+        # type, and there is one shared comment box
         key = (signer.pk if signer else None, field_type)
-        if (
-            field_type not in [*SigningField.FieldType.values, SHARED_COMMENT]
-            or key in seen
+        if field_type not in [*SigningField.FieldType.values, SHARED_COMMENT] or (
+            field_type != SigningField.FieldType.SIGNATURE and key in seen
         ):
             raise ValidationError('Invalid signature box.')
         # A little slack for rounding in the browser

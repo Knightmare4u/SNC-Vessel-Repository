@@ -19,7 +19,7 @@
         <p class="sg-muted">{{ signing_request.filename }}</p>
         <div class="sg-status">Order {{ signer.signing_order }} of {{ signer_count }} · {{ user|display_name }}</div>
         {% if manual %}
-        <p>Please review the document. Your signature goes in the highlighted box{% if has_date_box %}, and today's date is filled in for you{% endif %}.</p>
+        <p>Please review the document. Your signature goes in the highlighted {% if signature_box_count > 1 %}boxes{% else %}box{% endif %}{% if has_date_box %}, and today's date is filled in for you{% endif %}.</p>
         {% else %}
         <p>Please review the document. Your signature and today's date will be added to a signature page at the end of the PDF.</p>
         {% endif %}
@@ -105,12 +105,14 @@ boxes.forEach((box) => {
     if (!pageEl) return;
     if (box.field_type === 'signature') {
         // Same as the side panel's button: opens the signature dialog
-        target = document.createElement('button');
-        target.type = 'button';
-        target.className = 'sg-target';
-        target.textContent = 'Click to sign';
-        target.addEventListener('click', () => document.getElementById('open-pad').click());
-        placeOnPage(target, pageEl, box);
+        // A signer may have several; one signature goes in all of them
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'sg-target';
+        button.textContent = 'Click to sign';
+        button.addEventListener('click', () => document.getElementById('open-pad').click());
+        placeOnPage(button, pageEl, box);
+        target ??= button;
     } else if (box.field_type === 'comment') {
         commentOut = document.createElement('div');
         commentOut.className = 'sg-target sg-target-comment';
@@ -192,7 +194,7 @@ if (commentOut) {
     commentBox.addEventListener('click', () => commentInput.focus());
 }
 
-// Open on the page where this person signs
+// Open on the first place where this person signs
 target?.scrollIntoView({ block: 'center' });
 </script>
 <script>

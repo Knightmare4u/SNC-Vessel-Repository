@@ -1419,9 +1419,12 @@ def signing_sign(request, pk):
     else:
         form = SignForm(user=request.user)
 
-    # Only this signer's boxes; other people's are not shown
+    # Only this signer's boxes; other people's are not shown. In page order, so
+    # the page opens on their first signature box.
     my_boxes = list(
-        signer.fields.values('field_type', 'page', 'x', 'y', 'width', 'height')
+        signer.fields.order_by('page', 'y').values(
+            'field_type', 'page', 'x', 'y', 'width', 'height'
+        )
     )
     comment_box = signing_service.comment_box(signer)
     shared_box = None
@@ -1450,6 +1453,10 @@ def signing_sign(request, pk):
             'manual': signing_request.placement_mode
             == SigningRequest.PlacementMode.MANUAL,
             'my_boxes': my_boxes,
+            'signature_box_count': sum(
+                box['field_type'] == SigningField.FieldType.SIGNATURE
+                for box in my_boxes
+            ),
             'has_date_box': any(
                 box['field_type'] == SigningField.FieldType.DATE for box in my_boxes
             ),

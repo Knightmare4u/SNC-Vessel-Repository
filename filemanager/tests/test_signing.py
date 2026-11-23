@@ -464,6 +464,26 @@ class SigningTests(StorageTestCase):
         )
         self.assertNotEqual(self.read('B/new.pdf'), self.original)
 
+    def test_request_follows_a_moved_file(self):
+        self.create_request()
+        signing_request = SigningRequest.objects.get()
+        # Into a folder the signers can't open, renamed as doc.pdf is taken there
+        self.make_file('Private/doc.pdf')
+        filesystem.move_file(signing_request.file, filesystem.resolve_folder('Private'))
+        self.assertEqual(
+            signing_request.file, filesystem.resolve_file('Private/doc_1.pdf')
+        )
+
+        self.sign_as(self.signer1, signing_request)
+        self.sign_as(self.signer2, signing_request)
+
+        signing_request.refresh_from_db()
+        self.assertEqual(
+            signing_request.activities.get(action='completed').detail,
+            {'written_back': True},
+        )
+        self.assertNotEqual(self.read('Private/doc_1.pdf'), self.original)
+
     # ---- Admin reset -------------------------------------------------------
 
     def reset(self, signing_request):
@@ -560,6 +580,39 @@ class SigningTests(StorageTestCase):
         signing_request.refresh_from_db()
         self.assertEqual(signing_request.status, SigningRequest.Status.DRAFT)
         self.assertEqual(mail.outbox, [])
+
+    def test_signer_can_sign_in_several_places(self):
+        self.overwrite('A/doc.pdf', make_pdf(pages=2))
+        self.create_request(placement_mode='manual', signers=[self.signer1])
+        signing_request = SigningRequest.objects.get()
+        signer1 = signing_request.signers.get()
+        self.place_and_send(
+            signing_request,
+            [self.signature_box(signer1), self.signature_box(signer1, page=2)],
+        )
+        self.assertEqual(signer1.fields.count(), 2)
+
+        self.sign_as(self.signer1, signing_request)
+
+        signing_request.refresh_from_db()
+        self.assertEqual(signing_request.status, SigningRequest.Status.COMPLETED)
+        # The one signature is stamped in both boxes
+        pages = PdfReader(io.BytesIO(self.read('A/doc.pdf'))).pages
+        self.assertEqual([len(page.images) for page in pages], [1, 1])
+
+    def test_date_and_comment_boxes_are_one_per_signer(self):
+        self.create_request(placement_mode='manual', signers=[self.signer1])
+        signing_request = SigningRequest.objects.get()
+        signer1 = signing_request.signers.get()
+        for field_type in ('date', 'comment'):
+            with self.subTest(field_type=field_type):
+                box = self.signature_box(signer1, field_type=field_type, y=0.1)
+                with self.assertRaisesMessage(
+                    ValidationError, 'Invalid signature box.'
+                ):
+                    signing_service.save_fields(
+                        signing_request, [self.signature_box(signer1), box, box]
+                    )
 
     def test_box_outside_the_page_is_rejected(self):
         self.create_request(placement_mode='manual', signers=[self.signer1])
